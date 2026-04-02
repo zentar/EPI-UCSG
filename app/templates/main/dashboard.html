@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid three">
+    <article class="card">
+        <h2>Docentes</h2>
+        <p>Gestiona carga y consulta de docentes por año (CSV/XLSX).</p>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <a class="button" href="{{ url_for('main.docentes_carga') }}">Cargar</a>
+            <a class="button" href="{{ url_for('main.docentes') }}" style="background:#303132;">Consultar</a>
+        </div>
+    </article>
+
+    <article class="card">
+        <h2>Publicaciones</h2>
+        <p>Carga y consulta publicaciones por año (CSV/XLSX).</p>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <a class="button" href="{{ url_for('main.publicaciones_carga') }}">Cargar</a>
+            <a class="button" href="{{ url_for('main.publicaciones') }}" style="background:#303132;">Consulta registros</a>
+            <a class="button" href="{{ url_for('main.publicaciones_consulta') }}" style="background:#303132;">Consulta publicaciones</a>
+        </div>
+    </article>
+
+    <article class="card">
+        <h2>Cruce 3 años</h2>
+        <p>Evalua N usando N-1, N-2 y N-3.</p>
+        <a class="button" href="{{ url_for('main.cruce') }}">Abrir módulo</a>
+    </article>
+</section>
+{% endblock %}

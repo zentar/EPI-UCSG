@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card" style="max-width: 620px; margin: 0 auto;">
+    <h2>Usuario inicial</h2>
+    <p>Configura el primer administrador de EPI-UCSG.</p>
+    <form method="post">
+        {{ form.hidden_tag() }}
+        <label>
+            {{ form.name.label }}
+            {{ form.name(placeholder="Administrador EPI") }}
+        </label>
+        <label>
+            {{ form.email.label }}
+            {{ form.email(placeholder="admin@ucsg.edu.ec") }}
+        </label>
+        <label>
+            {{ form.password.label }}
+            {{ form.password(placeholder="Mínimo 8 caracteres") }}
+        </label>
+        {{ form.submit(class_="button") }}
+    </form>
+</section>
+{% endblock %}

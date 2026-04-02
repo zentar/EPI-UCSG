@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    .filter-select {
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+        background: #fff;
+        color: var(--ink);
+        width: 100%;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b6b6c' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 34px;
+        cursor: pointer;
+    }
+
+    .filter-label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+    }
+
+    .stat-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fafafa;
+    }
+
+    .stat-card strong {
+        display: block;
+        font-size: 1.15rem;
+        color: var(--ink);
+    }
+
+    .stat-card span {
+        font-size: 0.78rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+</style>
+
+<section class="card">
+    <h2 style="margin:0; border:none; padding:0;">Publicaciones evaluación</h2>
+
+    <form id="eval-filter-form" method="get" style="margin-top:14px; display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+        <label class="filter-label" style="max-width: 220px;">
+            Año de evaluación
+            <select id="filter-year" name="year" class="filter-select">
+                {% for year in years %}
+                <option value="{{ year }}" {% if evaluation_year == year %}selected{% endif %}>{{ year }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </form>
+
+    <p style="margin-top:12px; color:var(--muted);">
+        Ventana evaluada: {% if source_years %}{{ source_years[0] }}, {{ source_years[1] }}, {{ source_years[2] }}{% else %}-{% endif %} (N-1, N-2, N-3)
+    </p>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <strong>{{ summary.teachers_total }}</strong>
+            <span>Docentes del año evaluación</span>
+        </div>
+        <div class="stat-card">
+            <strong>{{ summary.publications_total_window }}</strong>
+            <span>Publicaciones únicas en ventana</span>
+        </div>
+        <div class="stat-card">
+            <strong>{{ summary.publications_with_teachers }}</strong>
+            <span>Publicaciones con docentes</span>
+        </div>
+        <div class="stat-card">
+            <strong>{{ summary.teacher_ids_with_publications }}</strong>
+            <span>IDs docentes con publicaciones</span>
+        </div>
+    </div>
+</section>
+
+<section class="card" style="margin-top:18px;">
+    <h2>Publicaciones con docentes{% if evaluation_year %} para evaluación {{ evaluation_year }}{% endif %}</h2>
+    <p style="margin-top:8px; color:var(--muted);">Mostrando {{ eval_state.total_filtered }} registro(s), página {{ eval_state.page }} de {{ eval_state.total_pages }}.</p>
+    <div style="margin-top: 16px; overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr>
+                    <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Secuencia</th>
+                    <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Año pub.</th>
+                    <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Cod tipo</th>
+                    <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Descripción</th>
+                    <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Autores (IDs)</th>
+                    <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Autores nombres</th>
+                    <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Autores docentes</th>
+                    <th style="text-align:right; border-bottom: 1px solid var(--line); padding: 10px;">Total docentes</th>
+                </tr>
+                <tr>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['SECUENCIA'] }}" value="{{ eval_state.filter_values['SECUENCIA'] }}" placeholder="Filtrar"></th>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['ANIO PUBLICACION'] }}" value="{{ eval_state.filter_values['ANIO PUBLICACION'] }}" placeholder="Filtrar"></th>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['COD TIPO'] }}" value="{{ eval_state.filter_values['COD TIPO'] }}" placeholder="Filtrar"></th>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['DESCRIPCION'] }}" value="{{ eval_state.filter_values['DESCRIPCION'] }}" placeholder="Filtrar"></th>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['AUTORES'] }}" value="{{ eval_state.filter_values['AUTORES'] }}" placeholder="Filtrar"></th>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['AUTORES NOMBRES'] }}" value="{{ eval_state.filter_values['AUTORES NOMBRES'] }}" placeholder="Filtrar"></th>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['AUTORES DOCENTES'] }}" value="{{ eval_state.filter_values['AUTORES DOCENTES'] }}" placeholder="Filtrar"></th>
+                    <th style="padding: 8px 10px; border-bottom:1px solid var(--line); background:#fafafa;"><input form="eval-filter-form" class="filter-select" style="height:34px;" type="text" name="{{ eval_state.column_param_map['TOTAL DOCENTES'] }}" value="{{ eval_state.filter_values['TOTAL DOCENTES'] }}" placeholder="Filtrar"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['SECUENCIA'] or '-' }}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['ANIO PUBLICACION'] or '-' }}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['COD TIPO'] or '-' }}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['DESCRIPCION'] or '-' }}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['AUTORES'] or '-' }}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['AUTORES NOMBRES'] or '-' }}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['AUTORES DOCENTES'] or '-' }}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid var(--line); text-align:right;">{{ row['TOTAL DOCENTES'] }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="8" style="padding: 10px;">No hay publicaciones con docentes para la ventana evaluada.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between;">
+        <label class="filter-label" style="max-width: 180px; margin:0;">
+            Registros por página
+            <select form="eval-filter-form" name="eval_page_size" class="filter-select" onchange="this.form.submit()">
+                {% for option in eval_state.page_size_options %}
+                <option value="{{ option }}" {% if eval_state.page_size == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+        {% if eval_state.prev_query %}
+        <a href="{{ url_for('main.publicaciones_evaluacion') }}?{{ eval_state.prev_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Anterior</a>
+        {% endif %}
+        {% for item in eval_state.page_links %}
+            {% if item.current %}
+            <span style="font-size:0.85rem; color:#fff; background:var(--crimson); border:1px solid var(--crimson); border-radius:6px; padding:7px 12px;">{{ item.number }}</span>
+            {% else %}
+            <a href="{{ url_for('main.publicaciones_evaluacion') }}?{{ item.query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">{{ item.number }}</a>
+            {% endif %}
+        {% endfor %}
+        {% if eval_state.next_query %}
+        <a href="{{ url_for('main.publicaciones_evaluacion') }}?{{ eval_state.next_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Siguiente</a>
+        {% endif %}
+        </div>
+    </div>
+</section>
+
+<script>
+    (() => {
+        const yearSelect = document.getElementById('filter-year');
+        const form = document.getElementById('eval-filter-form');
+        if (!yearSelect || !form) return;
+        yearSelect.addEventListener('change', () => form.submit());
+    })();
+</script>
+{% endblock %}

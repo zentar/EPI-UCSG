@@ -1,0 +1,464 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    .publication-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(17, 24, 39, 0.38);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        z-index: 200;
+    }
+
+    .publication-modal-backdrop.open {
+        display: flex;
+    }
+
+    .publication-modal {
+        width: min(760px, 100%);
+        max-height: 80vh;
+        overflow: auto;
+        background: #fff;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        box-shadow: 0 20px 60px rgba(17, 24, 39, 0.18);
+        padding: 22px;
+    }
+
+    .publication-columns-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 8px 14px;
+        margin-top: 10px;
+    }
+
+    .publication-columns-grid label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-size: 0.88rem;
+    }
+
+    .publication-columns-grid input[type="checkbox"] {
+        margin: 0;
+    }
+
+    .publication-filter-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: end;
+    }
+
+    .publication-filter-input {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+    }
+
+    .publication-actions {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+    }
+
+    .publication-header-filter {
+        width: 100%;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+        font-size: 0.82rem;
+        background: #fff;
+    }
+
+    .tab-bar {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid var(--line);
+        margin-top: 18px;
+    }
+
+    .tab-link {
+        text-decoration: none;
+        padding: 8px 18px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--muted);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: color 0.15s, border-color 0.15s;
+    }
+
+    .tab-link:hover {
+        color: var(--ink);
+    }
+
+    .tab-link.active {
+        color: var(--crimson);
+        border-bottom-color: var(--crimson);
+    }
+</style>
+<section class="grid" style="gap: 18px;">
+    <article class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:16px;">
+            <h2 style="margin:0; border:none; padding:0;">Consulta registros</h2>
+            <a href="{{ url_for('main.publicaciones_carga') }}" style="text-decoration:none; font-size:0.85rem; color:var(--crimson); border:1px solid var(--crimson); border-radius:6px; padding:6px 14px; font-weight:600;">+ Cargar archivo</a>
+        </div>
+
+        <form id="publicaciones-filter-form" method="get" style="display:grid; gap: 16px;">
+            <input type="hidden" name="tab" value="{{ active_tab }}">
+            <div class="publication-filter-grid">
+                <label>
+                    Ano
+                    <select id="filter-year" name="year" style="padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width:100%;">
+                        {% for year in years %}
+                        <option value="{{ year }}" {% if selected_year == year %}selected{% endif %}>{{ year }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    Buscador general
+                    <input class="publication-filter-input" id="publication-search" name="search" type="text" value="{{ search_query }}" placeholder="Buscar en columnas visibles">
+                </label>
+            </div>
+
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                {% for column in selected_columns %}
+                <input type="hidden" name="columns" value="{{ column }}">
+                {% endfor %}
+                <button class="button" id="open-columns-modal" type="button" style="background:#303132;">Seleccionar campos</button>
+                <span style="font-size:0.85rem; color:var(--muted);">{{ selected_columns|length }} campo(s) visibles</span>
+            </div>
+
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="button" type="submit">Actualizar vista</button>
+                <a href="{{ url_for('main.publicaciones', year=selected_year) if selected_year else url_for('main.publicaciones') }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:9px 14px; font-weight:600;">Limpiar filtros</a>
+            </div>
+        </form>
+
+        {% if selected_year %}
+        <div style="margin-top: 14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <a href="{{ url_for('main.publicaciones_export') }}?{{ export_csv_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--crimson); border:1px solid var(--crimson); border-radius:6px; padding:7px 14px; font-weight:600;">&#8595; CSV</a>
+                <a href="{{ url_for('main.publicaciones_export') }}?{{ export_xlsx_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--crimson); border:1px solid var(--crimson); border-radius:6px; padding:7px 14px; font-weight:600;">&#8595; XLSX</a>
+            </div>
+            <form method="post" action="{{ url_for('main.publicaciones_delete_year') }}" onsubmit="return confirm('Se eliminarán todas las publicaciones y lotes del año {{ selected_year }}. ¿Deseas continuar?');" style="display:block; margin:0;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="year" value="{{ selected_year }}">
+                <button class="button" style="background:#303132;" type="submit">Eliminar año {{ selected_year }}</button>
+            </form>
+        </div>
+        {% endif %}
+
+        <div class="tab-bar">
+            <a id="publicaciones-tab-listado" data-tab="listado" class="tab-link {% if active_tab == 'listado' %}active{% endif %}" href="{{ url_for('main.publicaciones') }}">Listado{% if selected_year and active_tab == 'listado' %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
+            <a id="publicaciones-tab-analisis" data-tab="analisis" class="tab-link {% if active_tab == 'analisis' %}active{% endif %}" href="{{ url_for('main.publicaciones') }}">Analisis{% if selected_year and active_tab == 'analisis' %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
+        </div>
+
+        <div id="publication-columns-modal" class="publication-modal-backdrop" aria-hidden="true">
+            <div class="publication-modal">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <div>
+                        <h3 style="margin:0; color:var(--ink);">Campos visibles</h3>
+                        <p style="margin:6px 0 0; color:var(--muted); font-size:0.9rem;">Selecciona los campos que quieres mostrar en la tabla y exportar.</p>
+                    </div>
+                    <button class="button" id="close-columns-modal" type="button" style="background:#303132;">Cerrar</button>
+                </div>
+
+                <form id="publication-columns-form" method="get" style="margin-top:16px; display:grid; gap:14px;">
+                    <input type="hidden" name="year" value="{{ selected_year or '' }}">
+                    <input type="hidden" name="search" value="{{ search_query }}">
+                    {% for column in selected_columns %}
+                        {% if visible_filter_values.get(column) %}
+                        <input type="hidden" name="{{ column_param_map[column] }}" value="{{ visible_filter_values.get(column, '') }}">
+                        {% endif %}
+                    {% endfor %}
+
+                    <div class="publication-columns-grid">
+                        {% for column in available_columns %}
+                        <label>
+                            <input type="checkbox" name="columns" value="{{ column }}" {% if column in selected_columns %}checked{% endif %}>
+                            <span>{{ column }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+                        <button class="button" type="submit">Aplicar campos</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <p style="margin-top:12px; color:var(--muted);">Mostrando {{ filtered_total }} publicacion(es).</p>
+    </article>
+
+    {% if active_tab == 'listado' %}
+    <article class="card">
+        <h2>Registros filtrados{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <div style="margin-top: 16px; overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        {% for column in selected_columns %}
+                        <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">{{ column }}</th>
+                        {% endfor %}
+                    </tr>
+                    {% if selected_columns %}
+                    <tr>
+                        {% for column in selected_columns %}
+                        <th style="padding: 8px 10px 10px; border-bottom: 1px solid var(--line); background:#fafafa;">
+                            <input class="publication-header-filter" form="publicaciones-filter-form" type="text" name="{{ column_param_map[column] }}" value="{{ visible_filter_values.get(column, '') }}" placeholder="Filtrar">
+                        </th>
+                        {% endfor %}
+                    </tr>
+                    {% endif %}
+                </thead>
+                <tbody>
+                    {% for row in publication_rows %}
+                    <tr>
+                        {% for column in selected_columns %}
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ row['values'].get(column, '-') or '-' }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="{{ selected_columns|length if selected_columns else 1 }}" style="padding: 10px;">No hay publicaciones para los filtros seleccionados.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% endif %}
+
+    {% if active_tab == 'analisis' %}
+    <article class="card">
+        <h2>Distribucion por tipo{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Tipo</th>
+                        <th style="text-align:right; width:120px; border-bottom: 1px solid var(--line); padding: 10px;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, total in type_stats %}
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ key or '(Sin tipo)' }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line); text-align:right; width:120px;">{{ total }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="2" style="padding: 10px;">No hay datos para mostrar.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    <article class="card">
+        <h2>Distribucion por base{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Base</th>
+                        <th style="text-align:right; width:120px; border-bottom: 1px solid var(--line); padding: 10px;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, total in base_stats %}
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ key or '(Sin base)' }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line); text-align:right; width:120px;">{{ total }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="2" style="padding: 10px;">No hay datos para mostrar.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    <article class="card">
+        <h2>Distribucion por cuartil{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Cuartil</th>
+                        <th style="text-align:right; width:120px; border-bottom: 1px solid var(--line); padding: 10px;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, total in quartile_stats %}
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ key or '(Sin cuartil)' }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line); text-align:right; width:120px;">{{ total }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="2" style="padding: 10px;">No hay datos para mostrar.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% endif %}
+</section>
+
+<script>
+    (() => {
+        const form = document.getElementById('publicaciones-filter-form');
+        if (!form) return;
+
+        const columnsStorageKey = 'epi_publicaciones_selected_columns_v1';
+        const availableColumns = {{ available_columns | tojson }};
+        const currentSelectedColumns = {{ selected_columns | tojson }};
+
+        const sanitizeColumns = (columns) => {
+            if (!Array.isArray(columns)) return [];
+            const allowed = new Set(availableColumns);
+            const unique = [];
+            columns.forEach((column) => {
+                if (typeof column !== 'string') return;
+                if (!allowed.has(column)) return;
+                if (unique.includes(column)) return;
+                unique.push(column);
+            });
+            return unique;
+        };
+
+        const saveSelectedColumns = (columns) => {
+            try {
+                const cleaned = sanitizeColumns(columns);
+                localStorage.setItem(columnsStorageKey, JSON.stringify(cleaned));
+            } catch (error) {
+                // Ignore storage errors (private mode or blocked storage).
+            }
+        };
+
+        const readSelectedColumns = () => {
+            try {
+                const raw = localStorage.getItem(columnsStorageKey);
+                if (!raw) return [];
+                return sanitizeColumns(JSON.parse(raw));
+            } catch (error) {
+                return [];
+            }
+        };
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const hasColumnsInUrl = urlParams.has('columns');
+        const storedColumns = readSelectedColumns();
+
+        if (!hasColumnsInUrl && storedColumns.length > 0) {
+            urlParams.delete('columns');
+            storedColumns.forEach((column) => urlParams.append('columns', column));
+            const nextQuery = urlParams.toString();
+            window.location.replace(`${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}`);
+            return;
+        }
+
+        saveSelectedColumns(currentSelectedColumns);
+
+        const yearSelect = document.getElementById('filter-year');
+        const searchInput = document.getElementById('publication-search');
+        const modal = document.getElementById('publication-columns-modal');
+        const openModal = document.getElementById('open-columns-modal');
+        const closeModal = document.getElementById('close-columns-modal');
+        const columnsForm = document.getElementById('publication-columns-form');
+        const tabLinks = document.querySelectorAll('.tab-link[data-tab]');
+        const headerFilters = document.querySelectorAll('.publication-header-filter');
+        let reactiveDebounce = null;
+
+        tabLinks.forEach((link) => {
+            const tabName = link.getAttribute('data-tab');
+            if (!tabName) return;
+            const params = new URLSearchParams(window.location.search);
+            params.set('tab', tabName);
+            const query = params.toString();
+            link.href = `${window.location.pathname}${query ? `?${query}` : ''}`;
+        });
+
+        if (yearSelect) yearSelect.addEventListener('change', () => form.submit());
+
+        const submitReactive = () => {
+            if (reactiveDebounce) {
+                clearTimeout(reactiveDebounce);
+            }
+            reactiveDebounce = setTimeout(() => {
+                form.submit();
+            }, 350);
+        };
+
+        if (searchInput) {
+            searchInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    form.submit();
+                }
+            });
+            searchInput.addEventListener('input', submitReactive);
+            searchInput.addEventListener('change', () => form.submit());
+            searchInput.addEventListener('blur', () => form.submit());
+        }
+
+        headerFilters.forEach((input) => {
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    form.submit();
+                }
+            });
+
+            input.addEventListener('input', submitReactive);
+            input.addEventListener('change', () => form.submit());
+            input.addEventListener('blur', () => form.submit());
+        });
+
+        if (columnsForm) {
+            columnsForm.addEventListener('submit', () => {
+                const selected = Array.from(columnsForm.querySelectorAll('input[name="columns"]:checked')).map((input) => input.value);
+                saveSelectedColumns(selected);
+            });
+        }
+
+        if (openModal && modal) {
+            openModal.addEventListener('click', () => {
+                modal.classList.add('open');
+                modal.setAttribute('aria-hidden', 'false');
+            });
+        }
+
+        if (closeModal && modal) {
+            closeModal.addEventListener('click', () => {
+                modal.classList.remove('open');
+                modal.setAttribute('aria-hidden', 'true');
+            });
+        }
+
+        if (modal) {
+            modal.addEventListener('click', (event) => {
+                if (event.target === modal) {
+                    modal.classList.remove('open');
+                    modal.setAttribute('aria-hidden', 'true');
+                }
+            });
+        }
+    })();
+</script>
+{% endblock %}
