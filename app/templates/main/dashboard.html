@@ -28,9 +28,15 @@
     </article>
 
     <article class="card">
-        <h2>PAC</h2>
-        <p>Calcula el indicador PAC con periodo, cuartil y dedicación docente.</p>
+        <h2>PA</h2>
+        <p>Calcula el indicador PA (Producción Académica) con periodo, cuartil y dedicación docente.</p>
         <a class="button" href="{{ url_for('main.evaluacion_pac') }}">Abrir módulo</a>
+    </article>
+
+    <article class="card">
+        <h2>Histórico PA</h2>
+        <p>Compara resultados PA entre años y revisa su tendencia.</p>
+        <a class="button" href="{{ url_for('main.evaluacion_pac_historico') }}">Abrir módulo</a>
     </article>
 </section>
 {% endblock %}

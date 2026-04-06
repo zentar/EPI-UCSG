@@ -9,6 +9,11 @@ from urllib.parse import urlencode
 import pandas as pd
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, url_for
 from flask_login import current_user, login_required
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from werkzeug.utils import secure_filename
 
 from app.extensions import db, limiter, csrf
@@ -421,13 +426,346 @@ def _chapter_weight(publication_authors: list[PublicationAuthor]) -> float:
     return 0.0
 
 
+def _resolve_pac_source_years(evaluation_year: int, publication_year_filter: str) -> tuple[list[int], str]:
+    default_source_years = [evaluation_year - 1, evaluation_year - 2, evaluation_year - 3]
+    all_publication_years = [
+        row[0]
+        for row in db.session.query(Publication.publication_year)
+        .filter(Publication.publication_year.isnot(None))
+        .distinct()
+        .order_by(Publication.publication_year.desc())
+        .all()
+    ]
+    publication_years_available = sorted([int(year) for year in all_publication_years if year], reverse=True)
+
+    source_years = list(default_source_years)
+    normalized_filter = publication_year_filter
+    if publication_year_filter != "ALL":
+        try:
+            publication_year_int = int(publication_year_filter)
+            if publication_year_int in publication_years_available:
+                source_years = [publication_year_int]
+            else:
+                normalized_filter = "ALL"
+        except (ValueError, TypeError):
+            normalized_filter = "ALL"
+
+    return source_years, normalized_filter
+
+
+def _compute_pac_summary(
+    evaluation_year: int,
+    selected_faculty: str,
+    selected_career: str,
+    publication_year_filter: str,
+    exclude_devueltos: bool,
+    p_artistica: float,
+    p_intelectual: float,
+) -> tuple[dict, list[int], str, dict[str, int]]:
+    source_years, normalized_pub_year_filter = _resolve_pac_source_years(evaluation_year, publication_year_filter)
+
+    teachers_query = Teacher.query.filter(Teacher.year == evaluation_year)
+    if selected_faculty != "ALL":
+        teachers_query = teachers_query.filter(Teacher.faculty == selected_faculty)
+    if selected_career != "ALL":
+        teachers_query = teachers_query.filter(Teacher.career == selected_career)
+
+    teacher_rows = teachers_query.all()
+    teacher_ids = {str(teacher.teacher_id or "").strip() for teacher in teacher_rows if teacher.teacher_id}
+    docentes_equivalentes = sum(_dedication_weight(teacher.dedication) for teacher in teacher_rows)
+    denominator_components = {
+        "tiempo_completo": 0,
+        "medio_tiempo": 0,
+        "tiempo_parcial": 0,
+        "no_definida": 0,
+    }
+
+    for teacher in teacher_rows:
+        dedication = str(teacher.dedication or "").strip().upper()
+        if dedication == "EXCLUSIVA O TIEMPO COMPLETO":
+            denominator_components["tiempo_completo"] += 1
+        elif dedication == "SEMI EXCLUSIVA O MEDIO TIEMPO":
+            denominator_components["medio_tiempo"] += 1
+        elif dedication == "TIEMPO PARCIAL":
+            denominator_components["tiempo_parcial"] += 1
+        else:
+            denominator_components["no_definida"] += 1
+
+    publications = (
+        Publication.query.filter(Publication.publication_year.in_(source_years))
+        .order_by(Publication.created_at.desc(), Publication.id.desc())
+        .all()
+    )
+
+    publication_ids = [publication.id for publication in publications]
+    author_rows = []
+    if publication_ids:
+        author_rows = (
+            PublicationAuthor.query.filter(PublicationAuthor.publication_id.in_(publication_ids))
+            .order_by(PublicationAuthor.id.asc())
+            .all()
+        )
+
+    authors_by_publication: dict[int, list[PublicationAuthor]] = defaultdict(list)
+    for publication_author in author_rows:
+        authors_by_publication[publication_author.publication_id].append(publication_author)
+
+    grouped_by_sequence: dict[str, dict] = {}
+    for publication in publications:
+        publication_year_value = int(publication.publication_year or 0)
+        if publication_year_value not in source_years:
+            continue
+        sequence = str(publication.publication_sequence or "").strip()
+        if sequence:
+            group_key = f"{publication_year_value}::{sequence}"
+        else:
+            group_key = f"{publication_year_value}::__NOSEQ__{publication.id}"
+        grouped = grouped_by_sequence.setdefault(
+            group_key,
+            {
+                "publication": publication,
+                "authors": [],
+            },
+        )
+        grouped["authors"].extend(authors_by_publication.get(publication.id, []))
+
+    publicaciones_docentes = 0
+    articulos_total = 0
+    libros_total = 0
+    capitulos_total = 0
+    articulos_ponderados = 0.0
+    capitulos_ponderados = 0.0
+
+    for grouped in grouped_by_sequence.values():
+        publication = grouped["publication"]
+        publication_authors = grouped["authors"]
+
+        if exclude_devueltos:
+            has_devueltos = False
+            for author in publication_authors:
+                row_json = author.source_row_json or {}
+                finalizar_value = str(row_json.get("FINALIZAR", "") or "").strip().upper()
+                if finalizar_value == "DEVUELTOS":
+                    has_devueltos = True
+                    break
+            if has_devueltos:
+                continue
+
+        ordered_author_ids = []
+        seen_author_ids = set()
+        for author in publication_authors:
+            num_id, _ = _extract_author_identity(author)
+            if not num_id or num_id in seen_author_ids:
+                continue
+            seen_author_ids.add(num_id)
+            ordered_author_ids.append(num_id)
+
+        if not any(author_id in teacher_ids for author_id in ordered_author_ids):
+            continue
+
+        publicaciones_docentes += 1
+        publication_type = str(publication.publication_type or "").strip().upper()
+
+        if publication_type == "A":
+            articulos_total += 1
+            _, weight = _article_category_and_weight(
+                publication.quartile or "",
+                publication.source_base or "",
+            )
+            articulos_ponderados += weight
+        elif publication_type == "L":
+            libros_total += 1
+        elif publication_type == "C":
+            capitulos_total += 1
+            chapter_weight = _chapter_weight(publication_authors)
+            capitulos_ponderados += chapter_weight
+
+    numerador = articulos_ponderados + libros_total + capitulos_ponderados + p_artistica + p_intelectual
+    pac_value = (numerador / docentes_equivalentes) if docentes_equivalentes > 0 else None
+
+    summary = {
+        "docentes_total": len(teacher_rows),
+        "docentes_equivalentes": round(docentes_equivalentes, 4),
+        "publicaciones_docentes": publicaciones_docentes,
+        "articulos_total": articulos_total,
+        "libros_total": libros_total,
+        "capitulos_total": capitulos_total,
+        "artistica_total": round(float(p_artistica), 4),
+        "intelectual_total": round(float(p_intelectual), 4),
+        "articulos_ponderados": round(articulos_ponderados, 4),
+        "capitulos_ponderados": round(capitulos_ponderados, 4),
+        "numerador": round(numerador, 4),
+        "pac": round(pac_value, 6) if pac_value is not None else None,
+    }
+
+    selected_period_label = "-"
+    if len(source_years) == 3:
+        selected_period_label = f"Período evaluación ({source_years[0]}, {source_years[1]}, {source_years[2]})"
+    elif len(source_years) == 1:
+        selected_period_label = str(source_years[0])
+
+    return (
+        summary,
+        source_years,
+        normalized_pub_year_filter if normalized_pub_year_filter == "ALL" else str(source_years[0]),
+        denominator_components,
+    )
+
+
+@main_bp.route("/evaluacion/pac/pdf")
+@login_required
+def evaluacion_pac_pdf():
+    evaluation_year = request.args.get("year", type=int)
+    selected_faculty = request.args.get("faculty", type=str, default="ALL")
+    selected_career = request.args.get("career", type=str, default="ALL")
+    publication_year_filter = request.args.get("pub_year", type=str, default="ALL")
+    exclude_devueltos_values = request.args.getlist("exclude_devueltos")
+    exclude_devueltos = "1" in exclude_devueltos_values if exclude_devueltos_values else True
+
+    years = [
+        row[0]
+        for row in db.session.query(Teacher.year)
+        .distinct()
+        .order_by(Teacher.year.desc())
+        .all()
+    ]
+
+    if evaluation_year is None:
+        evaluation_year = years[0] if years else None
+
+    if evaluation_year is None:
+        flash("No hay años disponibles para generar el reporte PA.", "error")
+        return redirect(url_for("main.evaluacion_pac"))
+
+    artistic_setting = PacArtisticSetting.query.filter_by(
+        evaluation_year=evaluation_year,
+        faculty_scope=selected_faculty,
+        career_scope=selected_career,
+    ).first()
+    if artistic_setting:
+        p_artistica = round(float(artistic_setting.artistic_value), 4) if artistic_setting.artistic_value is not None else 10.0
+        p_intelectual = round(float(artistic_setting.intellectual_value), 4) if artistic_setting.intellectual_value is not None else 0.0
+    else:
+        p_artistica = 10.0
+        p_intelectual = 0.0
+
+    summary, source_years, normalized_pub_year_filter, denominator_components = _compute_pac_summary(
+        evaluation_year=evaluation_year,
+        selected_faculty=selected_faculty,
+        selected_career=selected_career,
+        publication_year_filter=publication_year_filter,
+        exclude_devueltos=exclude_devueltos,
+        p_artistica=p_artistica,
+        p_intelectual=p_intelectual,
+    )
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
+    )
+    styles = getSampleStyleSheet()
+    story = []
+
+    period_label = ", ".join(str(year) for year in source_years) if source_years else "-"
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    story.append(Paragraph("Reporte PA (Producción Académica)", styles["Title"]))
+    story.append(Spacer(1, 0.2 * cm))
+    story.append(Paragraph(f"Año de evaluación: {evaluation_year}", styles["Normal"]))
+    story.append(Paragraph(f"Facultad: {selected_faculty}", styles["Normal"]))
+    story.append(Paragraph(f"Carrera: {selected_career}", styles["Normal"]))
+    story.append(Paragraph(f"Período usado: {period_label}", styles["Normal"]))
+    story.append(Paragraph(f"Filtro período publicaciones: {normalized_pub_year_filter}", styles["Normal"]))
+    story.append(Paragraph(f"Excluir DEVUELTOS: {'Sí' if exclude_devueltos else 'No'}", styles["Normal"]))
+    story.append(Paragraph(f"Fecha de generación: {generated_at}", styles["Normal"]))
+    story.append(Spacer(1, 0.35 * cm))
+
+    summary_table_data = [
+        ["Indicador", "Valor"],
+        ["Docentes considerados", str(summary["docentes_total"])],
+        ["Docentes equivalentes", str(summary["docentes_equivalentes"])],
+        ["Publicaciones con docente", str(summary["publicaciones_docentes"])],
+        ["Artículos (total)", str(summary["articulos_total"])],
+        ["Libros (total)", str(summary["libros_total"])],
+        ["Capítulos (total)", str(summary["capitulos_total"])],
+        ["Artículos ponderados", str(summary["articulos_ponderados"])],
+        ["Capítulos ponderados", str(summary["capitulos_ponderados"])],
+        ["Producción artística", str(summary["artistica_total"])],
+        ["Producción intelectual", str(summary["intelectual_total"])],
+        ["Numerador PA", str(summary["numerador"])],
+        ["PA", str(summary["pac"]) if summary["pac"] is not None else "-"],
+    ]
+    summary_table = Table(summary_table_data, colWidths=[10 * cm, 6 * cm])
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#A90046")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#C9C9C9")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(summary_table)
+    story.append(Spacer(1, 0.35 * cm))
+
+    denominator_table_data = [
+        ["Componente denominador", "Total", "Factor"],
+        ["Tiempo completo", str(denominator_components["tiempo_completo"]), "1.0"],
+        ["Medio tiempo", str(denominator_components["medio_tiempo"]), "0.5"],
+        ["Tiempo parcial", str(denominator_components["tiempo_parcial"]), "0.0"],
+        ["No definida", str(denominator_components["no_definida"]), "0.0"],
+    ]
+    denominator_table = Table(denominator_table_data, colWidths=[8 * cm, 4 * cm, 4 * cm])
+    denominator_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#303132")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#C9C9C9")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(denominator_table)
+
+    doc.build(story)
+    buffer.seek(0)
+
+    file_name = f"pa_{evaluation_year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    return send_file(buffer, mimetype="application/pdf", as_attachment=True, download_name=file_name)
+
+
 @main_bp.route("/evaluacion/pac")
 @login_required
 def evaluacion_pac():
     artistica_raw = request.args.get("artistica", type=str)
+    intelectual_raw = request.args.get("intelectual", type=str)
     persist_artistica = request.args.get("set_artistica", type=str, default="0") == "1"
+    persist_intelectual = request.args.get("set_intelectual", type=str, default="0") == "1"
     parsed_artistica = _parse_non_negative_float((artistica_raw or "").strip())
+    parsed_intelectual = _parse_non_negative_float((intelectual_raw or "").strip())
     p_artistica = 10.0
+    p_intelectual = 0.0
     evaluation_year = request.args.get("year", type=int)
     selected_faculty = request.args.get("faculty", type=str, default="ALL")
     selected_career = request.args.get("career", type=str, default="ALL")
@@ -470,6 +808,7 @@ def evaluacion_pac():
         "libros_total": 0,
         "capitulos_total": 0,
         "artistica_total": 0,
+        "intelectual_total": 0,
         "articulos_ponderados": 0.0,
         "capitulos_ponderados": 0.0,
         "numerador": 0.0,
@@ -554,17 +893,42 @@ def evaluacion_pac():
                     faculty_scope=selected_faculty,
                     career_scope=selected_career,
                     artistic_value=p_artistica,
+                    intellectual_value=round(parsed_intelectual, 4) if parsed_intelectual is not None else 0.0,
                 )
                 db.session.add(artistic_setting)
             else:
                 artistic_setting.artistic_value = p_artistica
+
+        if persist_intelectual and parsed_intelectual is not None:
+            p_intelectual = round(parsed_intelectual, 4)
+            if artistic_setting is None:
+                artistic_setting = PacArtisticSetting(
+                    evaluation_year=evaluation_year,
+                    faculty_scope=selected_faculty,
+                    career_scope=selected_career,
+                    artistic_value=round(parsed_artistica, 4) if parsed_artistica is not None else 10.0,
+                    intellectual_value=p_intelectual,
+                )
+                db.session.add(artistic_setting)
+            else:
+                artistic_setting.intellectual_value = p_intelectual
+
+        if (persist_artistica and parsed_artistica is not None) or (persist_intelectual and parsed_intelectual is not None):
             db.session.commit()
-        elif artistic_setting is not None:
+
+        if artistic_setting is not None:
             p_artistica = round(float(artistic_setting.artistic_value or 0.0), 4)
-        elif parsed_artistica is not None:
-            p_artistica = round(parsed_artistica, 4)
+            p_intelectual = round(float(artistic_setting.intellectual_value or 0.0), 4)
         else:
-            p_artistica = 10.0
+            if parsed_artistica is not None:
+                p_artistica = round(parsed_artistica, 4)
+            else:
+                p_artistica = 10.0
+
+            if parsed_intelectual is not None:
+                p_intelectual = round(parsed_intelectual, 4)
+            else:
+                p_intelectual = 0.0
 
         teachers_query = Teacher.query.filter(Teacher.year == evaluation_year)
         if selected_faculty != "ALL":
@@ -691,7 +1055,7 @@ def evaluacion_pac():
                 publication_type_stats["E"]["total"] += 1
                 publication_type_stats["E"]["ponderado"] += 1.0
 
-        numerador = articulos_ponderados + libros_total + capitulos_ponderados + p_artistica
+        numerador = articulos_ponderados + libros_total + capitulos_ponderados + p_artistica + p_intelectual
         pac_value = (numerador / docentes_equivalentes) if docentes_equivalentes > 0 else None
 
         summary = {
@@ -702,6 +1066,7 @@ def evaluacion_pac():
             "libros_total": libros_total,
             "capitulos_total": capitulos_total,
             "artistica_total": p_artistica,
+            "intelectual_total": p_intelectual,
             "articulos_ponderados": round(articulos_ponderados, 4),
             "capitulos_ponderados": round(capitulos_ponderados, 4),
             "numerador": round(numerador, 4),
@@ -724,6 +1089,7 @@ def evaluacion_pac():
         years=years,
         evaluation_year=evaluation_year,
         artistica_input=f"{p_artistica:g}",
+        intelectual_input=f"{p_intelectual:g}",
         selected_faculty=selected_faculty,
         selected_career=selected_career,
         faculty_options=faculty_options,
@@ -738,6 +1104,159 @@ def evaluacion_pac():
         denominator_components=denominator_components,
         quartile_stats=quartile_stats_rows,
         publication_type_stats=publication_type_stats_rows,
+    )
+
+
+@main_bp.route("/evaluacion/pac/historico")
+@login_required
+def evaluacion_pac_historico():
+    years = [
+        row[0]
+        for row in db.session.query(Teacher.year)
+        .distinct()
+        .order_by(Teacher.year.desc())
+        .all()
+    ]
+
+    if not years:
+        return render_template(
+            "main/evaluacion_pac_historico.html",
+            years=[],
+            selected_year_start=None,
+            selected_year_end=None,
+            selected_faculty="ALL",
+            selected_career="ALL",
+            faculty_options=[],
+            career_options=[],
+            publication_year_filter="ALL",
+            exclude_devueltos=True,
+            history_rows=[],
+            best_row=None,
+            worst_row=None,
+            average_pac=None,
+            chart_labels=[],
+            chart_values=[],
+        )
+
+    selected_year_end = request.args.get("year_end", type=int, default=years[0])
+    selected_year_start = request.args.get("year_start", type=int, default=years[-1])
+
+    if selected_year_end not in years:
+        selected_year_end = years[0]
+    if selected_year_start not in years:
+        selected_year_start = years[-1]
+    if selected_year_start > selected_year_end:
+        selected_year_start, selected_year_end = selected_year_end, selected_year_start
+
+    selected_faculty = request.args.get("faculty", type=str, default="ALL")
+    selected_career = request.args.get("career", type=str, default="ALL")
+    publication_year_filter = request.args.get("pub_year", type=str, default="ALL")
+
+    exclude_devueltos_values = request.args.getlist("exclude_devueltos")
+    if exclude_devueltos_values:
+        exclude_devueltos = "1" in exclude_devueltos_values
+    else:
+        exclude_devueltos = True
+
+    faculty_options = [
+        row[0]
+        for row in db.session.query(Teacher.faculty)
+        .filter(Teacher.year == selected_year_end, Teacher.faculty.isnot(None), Teacher.faculty != "")
+        .distinct()
+        .order_by(Teacher.faculty.asc())
+        .all()
+    ]
+
+    if selected_faculty == "ALL":
+        selected_career = "ALL"
+        career_options = []
+    else:
+        career_options = [
+            row[0]
+            for row in db.session.query(Teacher.career)
+            .filter(
+                Teacher.year == selected_year_end,
+                Teacher.faculty == selected_faculty,
+                Teacher.career.isnot(None),
+                Teacher.career != "",
+            )
+            .distinct()
+            .order_by(Teacher.career.asc())
+            .all()
+        ]
+        if selected_career != "ALL" and selected_career not in career_options:
+            selected_career = "ALL"
+
+    target_years = [year for year in years if selected_year_start <= year <= selected_year_end]
+    target_years = sorted(target_years)
+
+    history_rows = []
+    for evaluation_year in target_years:
+        artistic_setting = PacArtisticSetting.query.filter_by(
+            evaluation_year=evaluation_year,
+            faculty_scope=selected_faculty,
+            career_scope=selected_career,
+        ).first()
+        if artistic_setting:
+            artistica_value = round(float(artistic_setting.artistic_value), 4) if artistic_setting.artistic_value is not None else 10.0
+            intelectual_value = round(float(artistic_setting.intellectual_value), 4) if artistic_setting.intellectual_value is not None else 0.0
+        else:
+            artistica_value = 10.0
+            intelectual_value = 0.0
+
+        summary, source_years, normalized_pub_year_filter, _ = _compute_pac_summary(
+            evaluation_year=evaluation_year,
+            selected_faculty=selected_faculty,
+            selected_career=selected_career,
+            publication_year_filter=publication_year_filter,
+            exclude_devueltos=exclude_devueltos,
+            p_artistica=artistica_value,
+            p_intelectual=intelectual_value,
+        )
+
+        history_rows.append(
+            {
+                "evaluation_year": evaluation_year,
+                "period": ", ".join(str(y) for y in source_years),
+                "docentes_total": summary["docentes_total"],
+                "docentes_equivalentes": summary["docentes_equivalentes"],
+                "publicaciones_docentes": summary["publicaciones_docentes"],
+                "articulos_ponderados": summary["articulos_ponderados"],
+                "libros_total": summary["libros_total"],
+                "capitulos_ponderados": summary["capitulos_ponderados"],
+                "numerador": summary["numerador"],
+                "artistica": summary["artistica_total"],
+                "intelectual": summary["intelectual_total"],
+                "pac": summary["pac"],
+                "publication_year_filter": normalized_pub_year_filter,
+            }
+        )
+
+    valid_rows = [row for row in history_rows if row["pac"] is not None]
+    best_row = max(valid_rows, key=lambda row: row["pac"]) if valid_rows else None
+    worst_row = min(valid_rows, key=lambda row: row["pac"]) if valid_rows else None
+    average_pac = round(sum(row["pac"] for row in valid_rows) / len(valid_rows), 6) if valid_rows else None
+
+    chart_labels = [str(row["evaluation_year"]) for row in history_rows]
+    chart_values = [row["pac"] if row["pac"] is not None else 0 for row in history_rows]
+
+    return render_template(
+        "main/evaluacion_pac_historico.html",
+        years=years,
+        selected_year_start=selected_year_start,
+        selected_year_end=selected_year_end,
+        selected_faculty=selected_faculty,
+        selected_career=selected_career,
+        faculty_options=faculty_options,
+        career_options=career_options,
+        publication_year_filter=publication_year_filter,
+        exclude_devueltos=exclude_devueltos,
+        history_rows=history_rows,
+        best_row=best_row,
+        worst_row=worst_row,
+        average_pac=average_pac,
+        chart_labels=chart_labels,
+        chart_values=chart_values,
     )
 
 

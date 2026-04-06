@@ -240,7 +240,8 @@
             <div class="sidenav-divider"></div>
             <div class="sidenav-group-label">Evaluación</div>
             <a class="sidenav-link {% if request.endpoint == 'main.publicaciones_evaluacion' %}active{% endif %}" href="{{ url_for('main.publicaciones_evaluacion') }}">Publicaciones</a>
-            <a class="sidenav-link {% if request.endpoint == 'main.evaluacion_pac' %}active{% endif %}" href="{{ url_for('main.evaluacion_pac') }}">PAC</a>
+            <a class="sidenav-link {% if request.endpoint == 'main.evaluacion_pac' %}active{% endif %}" href="{{ url_for('main.evaluacion_pac') }}">PA</a>
+            <a class="sidenav-link {% if request.endpoint == 'main.evaluacion_pac_historico' %}active{% endif %}" href="{{ url_for('main.evaluacion_pac_historico') }}">Histórico PA</a>
             <div class="sidenav-divider"></div>
             <div class="sidenav-group-label">Configuraciones</div>
             <a class="sidenav-link {% if request.endpoint == 'main.config_publication_types' %}active{% endif %}" href="{{ url_for('main.config_publication_types') }}">Tipos de publicación</a>

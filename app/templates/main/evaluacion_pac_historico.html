@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    .filter-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 12px;
+        align-items: end;
+    }
+
+    .filter-label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .filter-select {
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+        background: #fff;
+        color: var(--ink);
+        width: 100%;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b6b6c' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 34px;
+        cursor: pointer;
+    }
+
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+    }
+
+    .stat-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fafafa;
+    }
+
+    .stat-card strong {
+        display: block;
+        font-size: 1.15rem;
+        color: var(--ink);
+    }
+
+    .stat-card span {
+        font-size: 0.78rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .chart-wrap {
+        margin-top: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #fff;
+    }
+
+    .link-inline {
+        color: var(--crimson);
+        text-decoration: none;
+        font-weight: 600;
+    }
+
+    .link-inline:hover {
+        text-decoration: underline;
+    }
+</style>
+
+<section class="card">
+    <h2 style="margin:0; border:none; padding:0;">Histórico resultados PA (Producción Académica)</h2>
+
+    <form id="pac-history-filter-form" method="get" style="margin-top:14px; display:grid; gap:12px;">
+        <div class="filter-grid">
+            <label class="filter-label">
+                Año inicio
+                <select id="filter-year-start" name="year_start" class="filter-select">
+                    {% for year in years %}
+                    <option value="{{ year }}" {% if selected_year_start == year %}selected{% endif %}>{{ year }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Año fin
+                <select id="filter-year-end" name="year_end" class="filter-select">
+                    {% for year in years %}
+                    <option value="{{ year }}" {% if selected_year_end == year %}selected{% endif %}>{{ year }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Facultad
+                <select id="filter-faculty" name="faculty" class="filter-select">
+                    <option value="ALL" {% if selected_faculty == 'ALL' %}selected{% endif %}>- Todas las facultades -</option>
+                    {% for faculty in faculty_options %}
+                    <option value="{{ faculty }}" {% if selected_faculty == faculty %}selected{% endif %}>{{ faculty }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Carrera{% if selected_faculty == 'ALL' %} <span style="font-weight:400; text-transform:none; letter-spacing:0;">(selecciona facultad primero)</span>{% endif %}
+                <select id="filter-career" name="career" class="filter-select" {% if selected_faculty == 'ALL' %}disabled{% endif %}>
+                    <option value="ALL" {% if selected_career == 'ALL' %}selected{% endif %}>- Todas las carreras -</option>
+                    {% for career in career_options %}
+                    <option value="{{ career }}" {% if selected_career == career %}selected{% endif %}>{{ career }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Período publicaciones
+                <select id="filter-pub-year" name="pub_year" class="filter-select">
+                    <option value="ALL" {% if publication_year_filter == 'ALL' %}selected{% endif %}>Período evaluación (N-1, N-2, N-3)</option>
+                    {% for year in years %}
+                    <option value="{{ year }}" {% if publication_year_filter == year|string %}selected{% endif %}>{{ year }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:var(--ink); text-transform:none; letter-spacing:0; font-weight:500;">
+            <input type="hidden" name="exclude_devueltos" value="0">
+            <input id="filter-exclude-devueltos" type="checkbox" name="exclude_devueltos" value="1" {% if exclude_devueltos %}checked{% endif %}>
+            Excluir registros con FINALIZAR = DEVUELTOS
+        </label>
+    </form>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <strong>{{ history_rows|length }}</strong>
+            <span>Años comparados</span>
+        </div>
+        <div class="stat-card">
+            <strong>{% if average_pac is not none %}{{ average_pac }}{% else %}-{% endif %}</strong>
+            <span>PA promedio</span>
+        </div>
+        <div class="stat-card">
+            <strong>{% if best_row %}{{ best_row.pac }}{% else %}-{% endif %}</strong>
+            <span>Mejor PA</span>
+        </div>
+        <div class="stat-card">
+            <strong>{% if worst_row %}{{ worst_row.pac }}{% else %}-{% endif %}</strong>
+            <span>Menor PA</span>
+        </div>
+    </div>
+
+    {% if history_rows %}
+    <div class="chart-wrap">
+        <canvas id="pac-history-chart" height="110"></canvas>
+    </div>
+        <script id="pac-history-labels" type="application/json">{{ chart_labels | tojson }}</script>
+        <script id="pac-history-values" type="application/json">{{ chart_values | tojson }}</script>
+    {% endif %}
+</section>
+
+<section class="card" style="margin-top:18px;">
+    <h2 style="margin-top:0;">Comparativo por año</h2>
+    <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+        <thead>
+            <tr>
+                <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Año evaluación</th>
+                <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Período usado</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Docentes</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Equivalentes</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Publicaciones</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PAC</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">L</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">CL</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PA</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PI</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">TOTAL</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PA final</th>
+                <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Detalle</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if history_rows %}
+                {% for row in history_rows %}
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">{{ row.evaluation_year }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">{{ row.period }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.docentes_total }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.docentes_equivalentes }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.publicaciones_docentes }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.articulos_ponderados }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.libros_total }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.capitulos_ponderados }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.artistica }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.intelectual }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.numerador }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right; font-weight:700;">{% if row.pac is not none %}{{ row.pac }}{% else %}-{% endif %}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">
+                        <a class="link-inline" href="{{ url_for('main.evaluacion_pac', year=row.evaluation_year, faculty=selected_faculty, career=selected_career, pub_year=row.publication_year_filter, exclude_devueltos=1 if exclude_devueltos else 0) }}">Ver PA</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr>
+                    <td colspan="13" style="padding:8px;">No hay datos para los filtros seleccionados.</td>
+                </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</section>
+
+<script>
+    (() => {
+        const form = document.getElementById('pac-history-filter-form');
+        if (!form) return;
+
+        const triggerIds = [
+            'filter-year-start',
+            'filter-year-end',
+            'filter-faculty',
+            'filter-career',
+            'filter-pub-year',
+            'filter-exclude-devueltos'
+        ];
+
+        triggerIds.forEach((id) => {
+            const element = document.getElementById(id);
+            if (!element) return;
+            element.addEventListener('change', () => form.submit());
+        });
+
+        const labelsNode = document.getElementById('pac-history-labels');
+        const valuesNode = document.getElementById('pac-history-values');
+        const labels = labelsNode ? JSON.parse(labelsNode.textContent || '[]') : [];
+        const values = valuesNode ? JSON.parse(valuesNode.textContent || '[]') : [];
+        const canvas = document.getElementById('pac-history-chart');
+        if (!canvas || !labels.length) return;
+
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        const padding = { top: 16, right: 22, bottom: 28, left: 36 };
+        const innerW = width - padding.left - padding.right;
+        const innerH = height - padding.top - padding.bottom;
+        const maxValue = Math.max(...values, 0.1);
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.strokeStyle = '#d9d9d9';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, padding.top);
+        ctx.lineTo(padding.left, height - padding.bottom);
+        ctx.lineTo(width - padding.right, height - padding.bottom);
+        ctx.stroke();
+
+        if (values.length === 1) {
+            const y = height - padding.bottom - (values[0] / maxValue) * innerH;
+            const x = padding.left + innerW / 2;
+            ctx.fillStyle = '#A90046';
+            ctx.beginPath();
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#303132';
+            ctx.font = '11px sans-serif';
+            ctx.fillText(labels[0], x - 10, height - 8);
+            ctx.fillText(String(values[0].toFixed ? values[0].toFixed(3) : values[0]), x + 6, y - 6);
+            return;
+        }
+
+        const points = values.map((value, idx) => {
+            const x = padding.left + (idx / (values.length - 1)) * innerW;
+            const y = height - padding.bottom - (value / maxValue) * innerH;
+            return { x, y, value, label: labels[idx] };
+        });
+
+        ctx.strokeStyle = '#A90046';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach((p, idx) => {
+            if (idx === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+        });
+        ctx.stroke();
+
+        ctx.fillStyle = '#A90046';
+        points.forEach((p) => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+        });
+
+        ctx.fillStyle = '#303132';
+        ctx.font = '11px sans-serif';
+        points.forEach((p) => {
+            ctx.fillText(p.label, p.x - 10, height - 8);
+        });
+    })();
+</script>
+{% endblock %}

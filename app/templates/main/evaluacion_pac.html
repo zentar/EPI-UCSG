@@ -75,10 +75,11 @@
 </style>
 
 <section class="card">
-    <h2 style="margin:0; border:none; padding:0;">Evaluación PAC</h2>
+    <h2 style="margin:0; border:none; padding:0;">Evaluación PA (Producción Académica)</h2>
 
     <form id="pac-filter-form" method="get" style="margin-top:14px; display:grid; gap:12px;">
         <input type="hidden" id="set-artistica" name="set_artistica" value="0">
+        <input type="hidden" id="set-intelectual" name="set_intelectual" value="0">
         <div class="filter-grid">
             <label class="filter-label">
                 Año evaluación
@@ -119,12 +120,19 @@
                 Producción artística
                 <input id="filter-artistica" name="artistica" type="number" min="0" step="0.01" class="filter-input" value="{{ artistica_input }}">
             </label>
+            <label class="filter-label">
+                Producción intelectual
+                <input id="filter-intelectual" name="intelectual" type="number" min="0" step="0.01" class="filter-input" value="{{ intelectual_input }}">
+            </label>
         </div>
         <label style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:var(--ink); text-transform:none; letter-spacing:0; font-weight:500;">
             <input type="hidden" name="exclude_devueltos" value="0">
             <input id="filter-exclude-devueltos" type="checkbox" name="exclude_devueltos" value="1" {% if exclude_devueltos %}checked{% endif %}>
             Excluir registros con FINALIZAR = DEVUELTOS
         </label>
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="submit" class="button" formaction="{{ url_for('main.evaluacion_pac_pdf') }}" formmethod="get">Exportar PDF</button>
+        </div>
     </form>
 
     <p style="margin-top:12px; color:var(--muted);">Período calculado: {{ selected_period_label }}</p>
@@ -144,11 +152,11 @@
         </div>
         <div class="stat-card">
             <strong>{{ summary.numerador }}</strong>
-            <span>Numerador PAC</span>
+            <span>Numerador PA</span>
         </div>
         <div class="stat-card">
             <strong>{% if summary.pac is not none %}{{ summary.pac }}{% else %}-{% endif %}</strong>
-            <span>PAC</span>
+            <span>PA</span>
         </div>
     </div>
 </section>
@@ -184,6 +192,11 @@
                     <td style="padding:8px; border-bottom:1px solid var(--line);">Producción artística (E)</td>
                     <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.artistica_total }}</td>
                     <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.artistica_total }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Producción intelectual</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.intelectual_total }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.intelectual_total }}</td>
                 </tr>
                 <tr>
                     <td style="padding:8px; font-weight:700;">Total numerador</td>
@@ -278,7 +291,9 @@
         const careerSelect = document.getElementById('filter-career');
         const pubYearSelect = document.getElementById('filter-pub-year');
         const artisticaInput = document.getElementById('filter-artistica');
+        const intelectualInput = document.getElementById('filter-intelectual');
         const setArtistica = document.getElementById('set-artistica');
+        const setIntelectual = document.getElementById('set-intelectual');
         const excludeDevueltos = document.getElementById('filter-exclude-devueltos');
         const form = document.getElementById('pac-filter-form');
         if (!yearSelect || !form) return;
@@ -289,6 +304,12 @@
         if (artisticaInput) {
             artisticaInput.addEventListener('change', () => {
                 if (setArtistica) setArtistica.value = '1';
+                form.submit();
+            });
+        }
+        if (intelectualInput) {
+            intelectualInput.addEventListener('change', () => {
+                if (setIntelectual) setIntelectual.value = '1';
                 form.submit();
             });
         }

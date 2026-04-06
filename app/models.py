@@ -107,6 +107,7 @@ class PacArtisticSetting(db.Model):
     faculty_scope = db.Column(db.String(120), nullable=False, default="ALL")
     career_scope = db.Column(db.String(120), nullable=False, default="ALL")
     artistic_value = db.Column(db.Float, nullable=False, default=10.0)
+    intellectual_value = db.Column(db.Float, nullable=False, default=0.0)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     __table_args__ = (
