@@ -7,13 +7,23 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pandas as pd
-from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, send_file, url_for
+from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, url_for
 from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
 
-from app.extensions import db, limiter
+from app.extensions import db, limiter, csrf
 from app.main.forms import PublicationUploadForm, TeacherUploadForm
-from app.models import ImportBatch, Publication, PublicationAuthor, Teacher
+from app.models import (
+    BaseExcluded,
+    BaseLabel,
+    ImportBatch,
+    PacArtisticSetting,
+    Publication,
+    PublicationAuthor,
+    PublicationTypeExcluded,
+    PublicationTypeLabel,
+    Teacher,
+)
 from app.services.publication_ingestion import parse_publications_file
 from app.services.teacher_ingestion import parse_teachers_file
 
@@ -110,6 +120,7 @@ def _filter_and_paginate_rows(rows: list[dict], request_args, columns: list[str]
 
     return {
         "rows": page_rows,
+        "filtered_rows": filtered_rows,
         "page": page,
         "page_size": page_size,
         "page_size_options": page_size_options,
@@ -117,6 +128,68 @@ def _filter_and_paginate_rows(rows: list[dict], request_args, columns: list[str]
         "total_pages": total_pages,
         "column_param_map": column_param_map,
         "filter_values": filter_values,
+        "prev_query": _query_for(page - 1) if page > 1 else "",
+        "next_query": _query_for(page + 1) if page < total_pages else "",
+        "page_links": page_links,
+    }
+
+
+def _paginate_items(items: list, request_args, prefix: str) -> dict:
+    page_size_options = [25, 50, 100, 200]
+    page_size = request_args.get(f"{prefix}_page_size", type=int, default=50)
+    if page_size not in page_size_options:
+        page_size = 50
+
+    total_filtered = len(items)
+    total_pages = max(1, (total_filtered + page_size - 1) // page_size) if total_filtered else 1
+
+    page = request_args.get(f"{prefix}_page", type=int, default=1)
+    if page < 1:
+        page = 1
+    if page > total_pages:
+        page = total_pages
+
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_items = items[start_idx:end_idx]
+
+    base_params = {}
+    for key in request_args.keys():
+        if key == f"{prefix}_page":
+            continue
+        values = request_args.getlist(key)
+        if values:
+            base_params[key] = values
+
+    base_params[f"{prefix}_page_size"] = [str(page_size)]
+
+    def _query_for(page_number: int) -> str:
+        params = {key: list(values) for key, values in base_params.items()}
+        params[f"{prefix}_page"] = [str(page_number)]
+        return urlencode(params, doseq=True)
+
+    if total_pages <= 7:
+        page_numbers = list(range(1, total_pages + 1))
+    else:
+        page_numbers = {1, total_pages, page - 1, page, page + 1}
+        page_numbers = [num for num in sorted(page_numbers) if 1 <= num <= total_pages]
+
+    page_links = [
+        {
+            "number": number,
+            "query": _query_for(number),
+            "current": number == page,
+        }
+        for number in page_numbers
+    ]
+
+    return {
+        "rows": page_items,
+        "page": page,
+        "page_size": page_size,
+        "page_size_options": page_size_options,
+        "total_filtered": total_filtered,
+        "total_pages": total_pages,
         "prev_query": _query_for(page - 1) if page > 1 else "",
         "next_query": _query_for(page + 1) if page < total_pages else "",
         "page_links": page_links,
@@ -157,7 +230,6 @@ def _collect_publication_view_state(selected_year: int | None, request_args) -> 
         return {
             "available_columns": available_columns,
             "selected_columns": selected_columns,
-            "visible_filter_values": visible_filter_values,
             "filtered_rows": filtered_rows,
             "search_query": search_query,
             "export_csv_query": "",
@@ -275,7 +347,407 @@ def _extract_author_identity(publication_author: PublicationAuthor) -> tuple[str
     return num_id, (full_name or num_id)
 
 
-def _collect_grouped_publication_view_state(selected_year: int | None, request_args) -> dict:
+def _dedication_weight(dedication: str) -> float:
+    normalized = str(dedication or "").strip().upper()
+    if normalized == "EXCLUSIVA O TIEMPO COMPLETO":
+        return 1.0
+    if normalized == "SEMI EXCLUSIVA O MEDIO TIEMPO":
+        return 0.5
+    return 0.0
+
+
+def _article_category_and_weight(quartile: str, base: str) -> tuple[str, float]:
+    normalized_base = str(base or "").strip().upper()
+    normalized_quartile = str(quartile or "").strip().upper()
+
+    if normalized_base in {"1", "2"}:
+        if normalized_quartile == "Q1":
+            return "Q1", 1.0
+        if normalized_quartile == "Q2":
+            return "Q2", 0.9
+        if normalized_quartile == "Q3":
+            return "Q3", 0.8
+        if normalized_quartile == "Q4":
+            return "Q4", 0.7
+        return "ACI", 0.6
+
+    if normalized_base == "3":
+        return "LATINDEX", 0.2
+
+    return "REGIONAL", 0.5
+
+
+def _parse_positive_float(value) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _parse_non_negative_float(value) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _chapter_weight(publication_authors: list[PublicationAuthor]) -> float:
+    for author in publication_authors:
+        row_json = author.source_row_json or {}
+        total_chapters = (
+            row_json.get("TOTAL CAPITULOS")
+            or row_json.get("TOTAL_CAPITULOS")
+            or row_json.get("TOTAL CAPÍTULOS")
+        )
+        parsed_total = _parse_positive_float(total_chapters)
+        if parsed_total:
+            return round(1.0 / parsed_total, 6)
+    return 0.0
+
+
+@main_bp.route("/evaluacion/pac")
+@login_required
+def evaluacion_pac():
+    artistica_raw = request.args.get("artistica", type=str)
+    persist_artistica = request.args.get("set_artistica", type=str, default="0") == "1"
+    parsed_artistica = _parse_non_negative_float((artistica_raw or "").strip())
+    p_artistica = 10.0
+    evaluation_year = request.args.get("year", type=int)
+    selected_faculty = request.args.get("faculty", type=str, default="ALL")
+    selected_career = request.args.get("career", type=str, default="ALL")
+    publication_year_filter = request.args.get("pub_year", type=str, default="ALL")
+    exclude_devueltos_values = request.args.getlist("exclude_devueltos")
+    if exclude_devueltos_values:
+        exclude_devueltos = "1" in exclude_devueltos_values
+    else:
+        exclude_devueltos = True
+
+    years = [
+        row[0]
+        for row in db.session.query(Teacher.year)
+        .distinct()
+        .order_by(Teacher.year.desc())
+        .all()
+    ]
+    if evaluation_year is None and years:
+        evaluation_year = years[0]
+
+    source_years = []
+    publication_years_available = []
+    faculty_options = []
+    career_options = []
+    selected_period_label = "-"
+
+    dedication_counts: dict[str, int] = defaultdict(int)
+    denominator_components = {
+        "tiempo_completo": 0,
+        "medio_tiempo": 0,
+        "tiempo_parcial": 0,
+        "no_definida": 0,
+    }
+
+    summary = {
+        "docentes_total": 0,
+        "docentes_equivalentes": 0.0,
+        "publicaciones_docentes": 0,
+        "articulos_total": 0,
+        "libros_total": 0,
+        "capitulos_total": 0,
+        "artistica_total": 0,
+        "articulos_ponderados": 0.0,
+        "capitulos_ponderados": 0.0,
+        "numerador": 0.0,
+        "pac": None,
+    }
+
+    quartile_stats: dict[str, dict[str, float | int]] = defaultdict(lambda: {"total": 0, "ponderado": 0.0})
+    publication_type_stats: dict[str, dict[str, float | int]] = defaultdict(lambda: {"total": 0, "ponderado": 0.0})
+
+    if evaluation_year is not None:
+        default_source_years = [evaluation_year - 1, evaluation_year - 2, evaluation_year - 3]
+        all_publication_years = [
+            row[0]
+            for row in db.session.query(Publication.publication_year)
+            .filter(Publication.publication_year.isnot(None))
+            .distinct()
+            .order_by(Publication.publication_year.desc())
+            .all()
+        ]
+        publication_years_available = sorted([int(year) for year in all_publication_years if year], reverse=True)
+
+        if publication_year_filter != "ALL":
+            try:
+                publication_year_int = int(publication_year_filter)
+                if publication_year_int in publication_years_available:
+                    source_years = [publication_year_int]
+                else:
+                    source_years = default_source_years
+                    publication_year_filter = "ALL"
+            except (ValueError, TypeError):
+                source_years = default_source_years
+                publication_year_filter = "ALL"
+        else:
+            source_years = default_source_years
+
+        if len(source_years) == 3:
+            selected_period_label = f"Periodo evaluacion ({source_years[0]}, {source_years[1]}, {source_years[2]})"
+        elif len(source_years) == 1:
+            selected_period_label = str(source_years[0])
+
+        faculty_options = [
+            row[0]
+            for row in db.session.query(Teacher.faculty)
+            .filter(Teacher.year == evaluation_year, Teacher.faculty.isnot(None), Teacher.faculty != "")
+            .distinct()
+            .order_by(Teacher.faculty.asc())
+            .all()
+        ]
+
+        if selected_faculty == "ALL":
+            selected_career = "ALL"
+            career_options = []
+        else:
+            career_options = [
+                row[0]
+                for row in db.session.query(Teacher.career)
+                .filter(
+                    Teacher.year == evaluation_year,
+                    Teacher.faculty == selected_faculty,
+                    Teacher.career.isnot(None),
+                    Teacher.career != "",
+                )
+                .distinct()
+                .order_by(Teacher.career.asc())
+                .all()
+            ]
+
+            if selected_career != "ALL" and selected_career not in career_options:
+                selected_career = "ALL"
+
+        artistic_setting = PacArtisticSetting.query.filter_by(
+            evaluation_year=evaluation_year,
+            faculty_scope=selected_faculty,
+            career_scope=selected_career,
+        ).first()
+
+        if persist_artistica and parsed_artistica is not None:
+            p_artistica = round(parsed_artistica, 4)
+            if artistic_setting is None:
+                artistic_setting = PacArtisticSetting(
+                    evaluation_year=evaluation_year,
+                    faculty_scope=selected_faculty,
+                    career_scope=selected_career,
+                    artistic_value=p_artistica,
+                )
+                db.session.add(artistic_setting)
+            else:
+                artistic_setting.artistic_value = p_artistica
+            db.session.commit()
+        elif artistic_setting is not None:
+            p_artistica = round(float(artistic_setting.artistic_value or 0.0), 4)
+        elif parsed_artistica is not None:
+            p_artistica = round(parsed_artistica, 4)
+        else:
+            p_artistica = 10.0
+
+        teachers_query = Teacher.query.filter(Teacher.year == evaluation_year)
+        if selected_faculty != "ALL":
+            teachers_query = teachers_query.filter(Teacher.faculty == selected_faculty)
+        if selected_career != "ALL":
+            teachers_query = teachers_query.filter(Teacher.career == selected_career)
+
+        teacher_rows = teachers_query.all()
+        teacher_ids = {str(teacher.teacher_id or "").strip() for teacher in teacher_rows if teacher.teacher_id}
+
+        for teacher in teacher_rows:
+            dedication = str(teacher.dedication or "").strip().upper()
+            dedication_counts[dedication or "NO DEFINIDA"] += 1
+            if dedication == "EXCLUSIVA O TIEMPO COMPLETO":
+                denominator_components["tiempo_completo"] += 1
+            elif dedication == "SEMI EXCLUSIVA O MEDIO TIEMPO":
+                denominator_components["medio_tiempo"] += 1
+            elif dedication == "TIEMPO PARCIAL":
+                denominator_components["tiempo_parcial"] += 1
+            else:
+                denominator_components["no_definida"] += 1
+
+        docentes_equivalentes = sum(_dedication_weight(teacher.dedication) for teacher in teacher_rows)
+
+        publications = (
+            Publication.query.filter(Publication.publication_year.in_(source_years))
+            .order_by(Publication.created_at.desc(), Publication.id.desc())
+            .all()
+        )
+
+        publication_ids = [publication.id for publication in publications]
+        author_rows = []
+        if publication_ids:
+            author_rows = (
+                PublicationAuthor.query.filter(PublicationAuthor.publication_id.in_(publication_ids))
+                .order_by(PublicationAuthor.id.asc())
+                .all()
+            )
+
+        authors_by_publication: dict[int, list[PublicationAuthor]] = defaultdict(list)
+        for publication_author in author_rows:
+            authors_by_publication[publication_author.publication_id].append(publication_author)
+
+        grouped_by_sequence: dict[str, dict] = {}
+        for publication in publications:
+            publication_year_value = int(publication.publication_year or 0)
+            if publication_year_value not in source_years:
+                continue
+            sequence = str(publication.publication_sequence or "").strip()
+            if sequence:
+                group_key = f"{publication_year_value}::{sequence}"
+            else:
+                group_key = f"{publication_year_value}::__NOSEQ__{publication.id}"
+            grouped = grouped_by_sequence.setdefault(
+                group_key,
+                {
+                    "publication": publication,
+                    "authors": [],
+                },
+            )
+            grouped["authors"].extend(authors_by_publication.get(publication.id, []))
+
+        publicaciones_docentes = 0
+        articulos_total = 0
+        libros_total = 0
+        capitulos_total = 0
+        artistica_total = 0
+        articulos_ponderados = 0.0
+        capitulos_ponderados = 0.0
+
+        for grouped in grouped_by_sequence.values():
+            publication = grouped["publication"]
+            publication_authors = grouped["authors"]
+
+            if exclude_devueltos:
+                has_devueltos = False
+                for author in publication_authors:
+                    row_json = author.source_row_json or {}
+                    finalizar_value = str(row_json.get("FINALIZAR", "") or "").strip().upper()
+                    if finalizar_value == "DEVUELTOS":
+                        has_devueltos = True
+                        break
+                if has_devueltos:
+                    continue
+
+            ordered_author_ids = []
+            seen_author_ids = set()
+            for author in publication_authors:
+                num_id, _ = _extract_author_identity(author)
+                if not num_id or num_id in seen_author_ids:
+                    continue
+                seen_author_ids.add(num_id)
+                ordered_author_ids.append(num_id)
+
+            if not any(author_id in teacher_ids for author_id in ordered_author_ids):
+                continue
+
+            publicaciones_docentes += 1
+            publication_type = str(publication.publication_type or "").strip().upper()
+
+            if publication_type == "A":
+                articulos_total += 1
+                article_category, weight = _article_category_and_weight(
+                    publication.quartile or "",
+                    publication.source_base or "",
+                )
+                articulos_ponderados += weight
+                quartile_stats[article_category]["total"] += 1
+                quartile_stats[article_category]["ponderado"] += weight
+                publication_type_stats["A"]["total"] += 1
+                publication_type_stats["A"]["ponderado"] += weight
+            elif publication_type == "L":
+                libros_total += 1
+                publication_type_stats["L"]["total"] += 1
+                publication_type_stats["L"]["ponderado"] += 1.0
+            elif publication_type == "C":
+                capitulos_total += 1
+                chapter_weight = _chapter_weight(publication_authors)
+                capitulos_ponderados += chapter_weight
+                publication_type_stats["C"]["total"] += 1
+                publication_type_stats["C"]["ponderado"] += chapter_weight
+            elif publication_type == "E":
+                artistica_total += 1
+                publication_type_stats["E"]["total"] += 1
+                publication_type_stats["E"]["ponderado"] += 1.0
+
+        numerador = articulos_ponderados + libros_total + capitulos_ponderados + p_artistica
+        pac_value = (numerador / docentes_equivalentes) if docentes_equivalentes > 0 else None
+
+        summary = {
+            "docentes_total": len(teacher_rows),
+            "docentes_equivalentes": round(docentes_equivalentes, 4),
+            "publicaciones_docentes": publicaciones_docentes,
+            "articulos_total": articulos_total,
+            "libros_total": libros_total,
+            "capitulos_total": capitulos_total,
+            "artistica_total": p_artistica,
+            "articulos_ponderados": round(articulos_ponderados, 4),
+            "capitulos_ponderados": round(capitulos_ponderados, 4),
+            "numerador": round(numerador, 4),
+            "pac": round(pac_value, 6) if pac_value is not None else None,
+        }
+
+    dedication_stats = sorted(dedication_counts.items(), key=lambda item: (-item[1], item[0]))
+    article_order = {"Q1": 0, "Q2": 1, "Q3": 2, "Q4": 3, "ACI": 4, "REGIONAL": 5, "LATINDEX": 6}
+    quartile_stats_rows = sorted(
+        [(key, values["total"], round(float(values["ponderado"]), 4)) for key, values in quartile_stats.items()],
+        key=lambda item: (article_order.get(item[0], 99), item[0]),
+    )
+    publication_type_stats_rows = sorted(
+        [(key, values["total"], round(float(values["ponderado"]), 4)) for key, values in publication_type_stats.items()],
+        key=lambda item: item[0],
+    )
+
+    return render_template(
+        "main/evaluacion_pac.html",
+        years=years,
+        evaluation_year=evaluation_year,
+        artistica_input=f"{p_artistica:g}",
+        selected_faculty=selected_faculty,
+        selected_career=selected_career,
+        faculty_options=faculty_options,
+        career_options=career_options,
+        publication_year_filter=publication_year_filter,
+        publication_years_available=publication_years_available,
+        source_years=source_years,
+        selected_period_label=selected_period_label,
+        exclude_devueltos=exclude_devueltos,
+        summary=summary,
+        dedication_stats=dedication_stats,
+        denominator_components=denominator_components,
+        quartile_stats=quartile_stats_rows,
+        publication_type_stats=publication_type_stats_rows,
+    )
+
+
+def _collect_grouped_publication_view_state(
+    selected_year: int | None,
+    request_args,
+    selected_faculty: str = "ALL",
+    selected_career: str = "ALL",
+    exclude_devueltos: bool = False,
+) -> dict:
     available_columns: list[str] = []
     selected_columns: list[str] = []
     visible_filter_values: dict[str, str] = {}
@@ -301,6 +773,20 @@ def _collect_grouped_publication_view_state(selected_year: int | None, request_a
         .order_by(Publication.created_at.desc(), Publication.id.desc())
         .all()
     )
+
+    teacher_scope_ids = None
+    if selected_faculty != "ALL" or selected_career != "ALL":
+        teacher_scope_query = db.session.query(Teacher.teacher_id).filter(Teacher.year == selected_year)
+        if selected_faculty != "ALL":
+            teacher_scope_query = teacher_scope_query.filter(Teacher.faculty == selected_faculty)
+        if selected_career != "ALL":
+            teacher_scope_query = teacher_scope_query.filter(Teacher.career == selected_career)
+
+        teacher_scope_ids = {
+            str(teacher_id or "").strip()
+            for (teacher_id,) in teacher_scope_query.all()
+            if teacher_id
+        }
 
     publication_ids = [publication.id for publication in publications]
     author_rows = []
@@ -357,9 +843,19 @@ def _collect_grouped_publication_view_state(selected_year: int | None, request_a
             ordered_author_ids.append(num_id)
             ordered_author_names.append(full_name)
 
+        if teacher_scope_ids is not None:
+            if not ordered_author_ids:
+                continue
+            if not any(author_id in teacher_scope_ids for author_id in ordered_author_ids):
+                continue
+
         base_payload["AUTORES"] = "; ".join(ordered_author_ids)
         base_payload["AUTORES NOMBRES"] = "; ".join(ordered_author_names)
         base_payload["TOTAL AUTORES"] = str(len(ordered_author_ids))
+
+        finalizar_value = str(base_payload.get("FINALIZAR", "") or "").strip().upper()
+        if exclude_devueltos and finalizar_value == "DEVUELTOS":
+            continue
 
         for excluded_column in excluded_grouped_columns:
             base_payload.pop(excluded_column, None)
@@ -423,6 +919,12 @@ def _collect_grouped_publication_view_state(selected_year: int | None, request_a
         filtered_rows.append(row)
 
     export_base_params = {"year": [str(selected_year)]}
+    if selected_faculty != "ALL":
+        export_base_params["faculty"] = [selected_faculty]
+    if selected_career != "ALL":
+        export_base_params["career"] = [selected_career]
+    if exclude_devueltos:
+        export_base_params["exclude_devueltos"] = ["1"]
     if search_query:
         export_base_params["search"] = [search_query]
     for column in selected_columns:
@@ -602,6 +1104,7 @@ def docentes():
         selected_year = latest.year if latest else None
 
     teachers = []
+    teachers_page_state = _paginate_items([], request.args, "docentes")
     faculty_options = []
     career_options = []
     filtered_total = 0
@@ -643,8 +1146,10 @@ def docentes():
         if selected_career != "ALL":
             filtered_query = filtered_query.filter(Teacher.career == selected_career)
 
-        filtered_total = filtered_query.count()
-        teachers = filtered_query.order_by(Teacher.teacher_name.asc()).limit(300).all()
+        ordered_teachers = filtered_query.order_by(Teacher.teacher_name.asc()).all()
+        teachers_page_state = _paginate_items(ordered_teachers, request.args, "docentes")
+        filtered_total = teachers_page_state["total_filtered"]
+        teachers = teachers_page_state["rows"]
 
     years = [row[0] for row in db.session.query(Teacher.year).distinct().order_by(Teacher.year.desc()).all()]
     dedication_stats = []
@@ -750,6 +1255,7 @@ def docentes():
         career_options=career_options,
         active_tab=active_tab,
         filtered_total=filtered_total,
+        teachers_page_state=teachers_page_state,
         dedication_stats=dedication_stats,
         category_stats=category_stats,
         faculty_stats=faculty_stats,
@@ -849,7 +1355,7 @@ def docentes_export():
 @main_bp.route("/docentes/template")
 @login_required
 def docentes_template():
-    template_path = Path("app/static/templates/docentes_template.csv")
+    template_path = Path(current_app.root_path) / "static" / "templates" / "docentes_template.csv"
     return send_file(
         template_path,
         as_attachment=True,
@@ -1094,6 +1600,7 @@ def publicaciones():
     search_query = ""
     export_csv_query = ""
     export_xlsx_query = ""
+    publication_page_state = _paginate_items([], request.args, "pubreg")
 
     if selected_year is not None:
         view_state = _collect_publication_view_state(selected_year, request.args)
@@ -1104,8 +1611,9 @@ def publicaciones():
         search_query = view_state["search_query"]
         export_csv_query = view_state["export_csv_query"]
         export_xlsx_query = view_state["export_xlsx_query"]
-        filtered_total = len(view_state["filtered_rows"])
-        publication_rows = view_state["filtered_rows"][:300]
+        publication_page_state = _paginate_items(view_state["filtered_rows"], request.args, "pubreg")
+        filtered_total = publication_page_state["total_filtered"]
+        publication_rows = publication_page_state["rows"]
 
         publication_ids = {row["publication"].id for row in view_state["filtered_rows"]}
         stats_query = db.session.query(Publication).filter(Publication.id.in_(publication_ids))
@@ -1151,6 +1659,7 @@ def publicaciones():
         search_query=search_query,
         export_csv_query=export_csv_query,
         export_xlsx_query=export_xlsx_query,
+        publication_page_state=publication_page_state,
     )
 
 
@@ -1235,7 +1744,18 @@ def publicaciones_export():
 @main_bp.route("/publicaciones/consulta")
 @login_required
 def publicaciones_consulta():
+    active_tab = request.args.get("tab", type=str, default="listado").strip().lower()
+    if active_tab not in {"listado", "analisis"}:
+        active_tab = "listado"
+
     selected_year = request.args.get("year", type=int)
+    selected_faculty = request.args.get("faculty", type=str, default="ALL")
+    selected_career = request.args.get("career", type=str, default="ALL")
+    exclude_devueltos_values = request.args.getlist("exclude_devueltos")
+    if exclude_devueltos_values:
+        exclude_devueltos = "1" in exclude_devueltos_values
+    else:
+        exclude_devueltos = True
 
     if selected_year is None:
         latest = Publication.query.order_by(Publication.publication_year.desc()).first()
@@ -1249,6 +1769,9 @@ def publicaciones_consulta():
         .all()
     ]
 
+    faculty_options = []
+    career_options = []
+
     publication_rows = []
     filtered_total = 0
     available_columns = []
@@ -1258,9 +1781,49 @@ def publicaciones_consulta():
     search_query = ""
     export_csv_query = ""
     export_xlsx_query = ""
+    publication_page_state = _paginate_items([], request.args, "pubcon")
+    type_stats = []
+    base_stats = []
+    quartile_stats = []
 
     if selected_year is not None:
-        view_state = _collect_grouped_publication_view_state(selected_year, request.args)
+        faculty_options = [
+            row[0]
+            for row in db.session.query(Teacher.faculty)
+            .filter(Teacher.year == selected_year, Teacher.faculty.isnot(None), Teacher.faculty != "")
+            .distinct()
+            .order_by(Teacher.faculty.asc())
+            .all()
+        ]
+
+        if selected_faculty == "ALL":
+            selected_career = "ALL"
+            career_options = []
+        else:
+            career_options = [
+                row[0]
+                for row in db.session.query(Teacher.career)
+                .filter(
+                    Teacher.year == selected_year,
+                    Teacher.faculty == selected_faculty,
+                    Teacher.career.isnot(None),
+                    Teacher.career != "",
+                )
+                .distinct()
+                .order_by(Teacher.career.asc())
+                .all()
+            ]
+
+            if selected_career != "ALL" and selected_career not in career_options:
+                selected_career = "ALL"
+
+        view_state = _collect_grouped_publication_view_state(
+            selected_year,
+            request.args,
+            selected_faculty=selected_faculty,
+            selected_career=selected_career,
+            exclude_devueltos=exclude_devueltos,
+        )
         available_columns = view_state["available_columns"]
         selected_columns = view_state["selected_columns"]
         visible_filter_values = view_state["visible_filter_values"]
@@ -1268,15 +1831,44 @@ def publicaciones_consulta():
         search_query = view_state["search_query"]
         export_csv_query = view_state["export_csv_query"]
         export_xlsx_query = view_state["export_xlsx_query"]
-        filtered_total = len(view_state["filtered_rows"])
-        publication_rows = view_state["filtered_rows"][:300]
+        publication_page_state = _paginate_items(view_state["filtered_rows"], request.args, "pubcon")
+        filtered_total = publication_page_state["total_filtered"]
+        publication_rows = publication_page_state["rows"]
+
+        type_counter = defaultdict(int)
+        base_counter = defaultdict(int)
+        quartile_counter = defaultdict(int)
+
+        for row in view_state["filtered_rows"]:
+            values = row["values"]
+
+            type_key = (values.get("COD TIPO", "") or "").strip() or "(Sin tipo)"
+            base_key = (values.get("BASE", "") or "").strip() or "(Sin base)"
+            quartile_key = (values.get("INDICE Q", "") or "").strip() or "(Sin cuartil)"
+
+            type_counter[type_key] += 1
+            base_counter[base_key] += 1
+            quartile_counter[quartile_key] += 1
+
+        type_stats = sorted(type_counter.items(), key=lambda item: (-item[1], item[0]))
+        base_stats = sorted(base_counter.items(), key=lambda item: (-item[1], item[0]))
+        quartile_stats = sorted(quartile_counter.items(), key=lambda item: (-item[1], item[0]))
 
     return render_template(
         "main/publicaciones_consulta.html",
+        active_tab=active_tab,
         years=years,
         selected_year=selected_year,
+        selected_faculty=selected_faculty,
+        selected_career=selected_career,
+        exclude_devueltos=exclude_devueltos,
+        faculty_options=faculty_options,
+        career_options=career_options,
         publication_rows=publication_rows,
         filtered_total=filtered_total,
+        type_stats=type_stats,
+        base_stats=base_stats,
+        quartile_stats=quartile_stats,
         available_columns=available_columns,
         selected_columns=selected_columns,
         visible_filter_values=visible_filter_values,
@@ -1284,6 +1876,7 @@ def publicaciones_consulta():
         search_query=search_query,
         export_csv_query=export_csv_query,
         export_xlsx_query=export_xlsx_query,
+        publication_page_state=publication_page_state,
     )
 
 
@@ -1291,13 +1884,26 @@ def publicaciones_consulta():
 @login_required
 def publicaciones_consulta_export():
     year = request.args.get("year", type=int)
+    selected_faculty = request.args.get("faculty", type=str, default="ALL")
+    selected_career = request.args.get("career", type=str, default="ALL")
+    exclude_devueltos_values = request.args.getlist("exclude_devueltos")
+    if exclude_devueltos_values:
+        exclude_devueltos = "1" in exclude_devueltos_values
+    else:
+        exclude_devueltos = True
     export_format = request.args.get("format", type=str, default="csv").lower()
 
     if not year:
         flash("Debes seleccionar un año para exportar.", "error")
         return redirect(url_for("main.publicaciones_consulta"))
 
-    view_state = _collect_grouped_publication_view_state(year, request.args)
+    view_state = _collect_grouped_publication_view_state(
+        year,
+        request.args,
+        selected_faculty=selected_faculty,
+        selected_career=selected_career,
+        exclude_devueltos=exclude_devueltos,
+    )
     selected_columns = view_state["selected_columns"]
     export_rows = [
         {column: row["values"].get(column, "") for column in selected_columns}
@@ -1336,7 +1942,7 @@ def publicaciones_consulta_export():
 @main_bp.route("/publicaciones/template")
 @login_required
 def publicaciones_template():
-    template_path = Path("app/static/templates/publicaciones_template.csv")
+    template_path = Path(current_app.root_path) / "static" / "templates" / "publicaciones_template.csv"
     return send_file(
         template_path,
         as_attachment=True,
@@ -1519,7 +2125,19 @@ def cruce():
 @main_bp.route("/evaluacion/publicaciones")
 @login_required
 def publicaciones_evaluacion():
+    active_tab = request.args.get("tab", type=str, default="con-docente").strip().lower()
+    if active_tab not in {"con-docente", "sin-docente"}:
+        active_tab = "con-docente"
+
     evaluation_year = request.args.get("year", type=int)
+    selected_faculty = request.args.get("faculty", type=str, default="ALL")
+    selected_career = request.args.get("career", type=str, default="ALL")
+    publication_year_filter = request.args.get("pub_year", type=str, default="ALL")
+    exclude_devueltos_values = request.args.getlist("exclude_devueltos")
+    if exclude_devueltos_values:
+        exclude_devueltos = "1" in exclude_devueltos_values
+    else:
+        exclude_devueltos = True
 
     teacher_years = [
         row[0]
@@ -1542,17 +2160,94 @@ def publicaciones_evaluacion():
 
     source_years = []
     with_teachers_rows = []
+    without_teachers_rows = []
+    faculty_options = []
+    career_options = []
+    publication_years_available = []
+    selected_period_label = "-"
     summary = {
         "teachers_total": 0,
         "publications_total_window": 0,
         "publications_with_teachers": 0,
+        "publications_without_teachers": 0,
         "teacher_ids_with_publications": 0,
     }
 
     if evaluation_year is not None:
-        source_years = [evaluation_year - 1, evaluation_year - 2, evaluation_year - 3]
+        default_source_years = [evaluation_year - 1, evaluation_year - 2, evaluation_year - 3]
+        
+        # Obtener todos los años de publicaciones disponibles (no solo del período)
+        all_publication_years = [
+            row[0]
+            for row in db.session.query(Publication.publication_year)
+            .filter(Publication.publication_year.isnot(None))
+            .distinct()
+            .order_by(Publication.publication_year.desc())
+            .all()
+        ]
+        publication_years_available = sorted([int(y) for y in all_publication_years if y], reverse=True)
 
-        teacher_rows = Teacher.query.filter(Teacher.year == evaluation_year).all()
+        # Determinar qué años consultar según el filtro de publicaciones
+        if publication_year_filter != "ALL":
+            try:
+                pub_year_int = int(publication_year_filter)
+                if pub_year_int in publication_years_available:
+                    source_years = [pub_year_int]
+                else:
+                    source_years = default_source_years
+                    publication_year_filter = "ALL"
+            except (ValueError, TypeError):
+                source_years = default_source_years
+                publication_year_filter = "ALL"
+        else:
+            source_years = default_source_years
+
+        if len(source_years) == 3:
+            selected_period_label = f"Periodo evaluacion ({source_years[0]}, {source_years[1]}, {source_years[2]})"
+        elif len(source_years) == 1:
+            selected_period_label = str(source_years[0])
+
+        faculty_options = [
+            row[0]
+            for row in db.session.query(Teacher.faculty)
+            .filter(Teacher.year == evaluation_year, Teacher.faculty.isnot(None), Teacher.faculty != "")
+            .distinct()
+            .order_by(Teacher.faculty.asc())
+            .all()
+        ]
+
+        if selected_faculty == "ALL":
+            selected_career = "ALL"
+            career_options = []
+        else:
+            career_options = [
+                row[0]
+                for row in db.session.query(Teacher.career)
+                .filter(
+                    Teacher.year == evaluation_year,
+                    Teacher.faculty == selected_faculty,
+                    Teacher.career.isnot(None),
+                    Teacher.career != "",
+                )
+                .distinct()
+                .order_by(Teacher.career.asc())
+                .all()
+            ]
+
+            if selected_career != "ALL" and selected_career not in career_options:
+                selected_career = "ALL"
+
+        # Cuando se filtra por facultad/carrera, la vista "Sin docente" no aplica.
+        if selected_faculty != "ALL" or selected_career != "ALL":
+            active_tab = "con-docente"
+
+        teachers_query = Teacher.query.filter(Teacher.year == evaluation_year)
+        if selected_faculty != "ALL":
+            teachers_query = teachers_query.filter(Teacher.faculty == selected_faculty)
+        if selected_career != "ALL":
+            teachers_query = teachers_query.filter(Teacher.career == selected_career)
+
+        teacher_rows = teachers_query.all()
         teacher_ids = {str(teacher.teacher_id or "").strip() for teacher in teacher_rows if teacher.teacher_id}
         teacher_name_by_id = {
             str(teacher.teacher_id or "").strip(): str(teacher.teacher_name or "").strip()
@@ -1601,11 +2296,50 @@ def publicaciones_evaluacion():
             grouped["authors"].extend(authors_by_publication.get(publication.id, []))
 
         teacher_ids_with_publications = set()
+        with_available_columns = []
+        without_available_columns = []
+        with_column_seen = set()
+        without_column_seen = set()
+        excluded_grouped_columns = {
+            "PARTICIPACION",
+            "COD UNIDAD",
+            "COD SUBUNIDAD",
+            "COD PAR EMPLEAD",
+            "TIPO DOCUMENTO",
+            "NUMERO IDENTIFICACION",
+            "PRIMER NOMBRE",
+            "SEGUNDO NOMBRE",
+            "APELLIDO PAT",
+            "APELLIDO MAT",
+            "FACULTAD",
+            "TIPO EMPLEADO",
+        }
 
         for grouped in grouped_by_sequence.values():
             publication = grouped["publication"]
             publication_year_value = grouped["publication_year"]
             publication_authors = grouped["authors"]
+            first_author = publication_authors[0] if publication_authors else None
+            base_payload = _publication_row_payload(publication, first_author) if first_author else {
+                "SECUENCIA": publication.publication_sequence or "",
+                "COD TIPO": publication.publication_type or "",
+                "ANIO PUBLICACION": str(publication.publication_year or ""),
+                "DESCRIPCION": publication.title or "",
+                "BASE": publication.source_base or "",
+                "INDICE Q": publication.quartile or "",
+                "NOMBRE REVISTA": publication.journal_name or "",
+            }
+
+            if exclude_devueltos:
+                has_devueltos = False
+                for author in publication_authors:
+                    row_json = author.source_row_json or {}
+                    finalizar_value = str(row_json.get("FINALIZAR", "") or "").strip().upper()
+                    if finalizar_value == "DEVUELTOS":
+                        has_devueltos = True
+                        break
+                if has_devueltos:
+                    continue
 
             ordered_author_ids = []
             ordered_author_names = []
@@ -1619,9 +2353,6 @@ def publicaciones_evaluacion():
                 ordered_author_names.append(full_name)
 
             matched_teacher_ids = [num_id for num_id in ordered_author_ids if num_id in teacher_ids]
-            if not matched_teacher_ids:
-                continue
-
             matched_teacher_labels = []
             for teacher_id in matched_teacher_ids:
                 teacher_name = teacher_name_by_id.get(teacher_id, "")
@@ -1630,33 +2361,87 @@ def publicaciones_evaluacion():
                 else:
                     matched_teacher_labels.append(teacher_id)
 
-            teacher_ids_with_publications.update(matched_teacher_ids)
+            base_payload["AUTORES"] = "; ".join(ordered_author_ids)
+            base_payload["AUTORES NOMBRES"] = "; ".join(ordered_author_names)
+            base_payload["AUTORES DOCENTES"] = "; ".join(matched_teacher_labels)
+            base_payload["TOTAL AUTORES"] = str(len(ordered_author_ids))
+            base_payload["TOTAL DOCENTES"] = str(len(matched_teacher_ids))
 
-            with_teachers_rows.append(
-                {
-                    "SECUENCIA": publication.publication_sequence or "",
-                    "ANIO PUBLICACION": str(publication_year_value or ""),
-                    "COD TIPO": publication.publication_type or "",
-                    "DESCRIPCION": publication.title or "",
-                    "AUTORES": "; ".join(ordered_author_ids),
-                    "AUTORES NOMBRES": "; ".join(ordered_author_names),
-                    "AUTORES DOCENTES": "; ".join(matched_teacher_labels),
-                    "TOTAL AUTORES": len(ordered_author_ids),
-                    "TOTAL DOCENTES": len(matched_teacher_ids),
-                    "BASE": publication.source_base or "",
-                    "INDICE Q": publication.quartile or "",
-                    "NOMBRE REVISTA": publication.journal_name or "",
-                }
-            )
+            for excluded_column in excluded_grouped_columns:
+                base_payload.pop(excluded_column, None)
+
+            row_payload = {str(key): "" if value is None else str(value) for key, value in base_payload.items()}
+
+            if matched_teacher_ids:
+                teacher_ids_with_publications.update(matched_teacher_ids)
+                with_teachers_rows.append(row_payload)
+                for key in row_payload.keys():
+                    if key not in with_column_seen:
+                        with_column_seen.add(key)
+                        with_available_columns.append(key)
+            else:
+                without_teachers_rows.append(row_payload)
+                for key in row_payload.keys():
+                    if key not in without_column_seen:
+                        without_column_seen.add(key)
+                        without_available_columns.append(key)
 
         summary = {
             "teachers_total": len(teacher_ids),
-            "publications_total_window": len(grouped_by_sequence),
+            "publications_total_window": len(with_teachers_rows) + len(without_teachers_rows),
             "publications_with_teachers": len(with_teachers_rows),
+            "publications_without_teachers": len(without_teachers_rows),
             "teacher_ids_with_publications": len(teacher_ids_with_publications),
         }
 
-    eval_columns = [
+    eval_with_default_columns = [
+        "SECUENCIA",
+        "ANIO PUBLICACION",
+        "COD TIPO",
+        "DESCRIPCION",
+        "AUTORES",
+        "AUTORES NOMBRES",
+        "AUTORES DOCENTES",
+        "TOTAL DOCENTES",
+        "BASE",
+        "INDICE Q",
+        "NOMBRE REVISTA",
+    ]
+    eval_without_default_columns = [
+        "SECUENCIA",
+        "ANIO PUBLICACION",
+        "COD TIPO",
+        "DESCRIPCION",
+        "AUTORES",
+        "AUTORES NOMBRES",
+        "TOTAL AUTORES",
+        "BASE",
+        "INDICE Q",
+        "NOMBRE REVISTA",
+    ]
+
+    if evaluation_year is not None:
+        with_available_set = set(with_available_columns)
+        eval_with_columns = [column for column in eval_with_default_columns if column in with_available_set] + [
+            column for column in with_available_columns if column not in eval_with_default_columns
+        ]
+        if not eval_with_columns:
+            eval_with_columns = list(eval_with_default_columns)
+
+        without_available_set = set(without_available_columns)
+        eval_without_columns = [column for column in eval_without_default_columns if column in without_available_set] + [
+            column for column in without_available_columns if column not in eval_without_default_columns
+        ]
+        if not eval_without_columns:
+            eval_without_columns = list(eval_without_default_columns)
+    else:
+        eval_with_columns = list(eval_with_default_columns)
+        eval_without_columns = list(eval_without_default_columns)
+
+    requested_eval_with_columns = [
+        column for column in request.args.getlist("eval_con_columns") if column in eval_with_columns
+    ]
+    selected_eval_with_columns = requested_eval_with_columns or [
         "SECUENCIA",
         "ANIO PUBLICACION",
         "COD TIPO",
@@ -1666,14 +2451,569 @@ def publicaciones_evaluacion():
         "AUTORES DOCENTES",
         "TOTAL DOCENTES",
     ]
-    eval_state = _filter_and_paginate_rows(with_teachers_rows, request.args, eval_columns, "eval")
+
+    requested_eval_without_columns = [
+        column for column in request.args.getlist("eval_sin_columns") if column in eval_without_columns
+    ]
+    selected_eval_without_columns = requested_eval_without_columns or [
+        "SECUENCIA",
+        "ANIO PUBLICACION",
+        "COD TIPO",
+        "DESCRIPCION",
+        "AUTORES",
+        "AUTORES NOMBRES",
+        "TOTAL AUTORES",
+    ]
+
+    eval_with_state = _filter_and_paginate_rows(with_teachers_rows, request.args, selected_eval_with_columns, "eval_con")
+    eval_without_state = _filter_and_paginate_rows(without_teachers_rows, request.args, selected_eval_without_columns, "eval_sin")
+
+    show_without_tab = selected_faculty == "ALL" and selected_career == "ALL"
+
+    tab_base_params = {key: request.args.getlist(key) for key in request.args.keys() if request.args.getlist(key)}
+    tab_with_params = {key: list(values) for key, values in tab_base_params.items()}
+    tab_with_params["tab"] = ["con-docente"]
+    tab_without_params = {key: list(values) for key, values in tab_base_params.items()}
+    tab_without_params["tab"] = ["sin-docente"]
+    tab_with_query = urlencode(tab_with_params, doseq=True)
+    tab_without_query = urlencode(tab_without_params, doseq=True)
+
+    export_csv_query = ""
+    export_xlsx_query = ""
+    if evaluation_year is not None:
+        export_base_params: dict[str, list[str]] = {
+            "year": [str(evaluation_year)],
+            "tab": [active_tab],
+            "pub_year": [str(publication_year_filter)],
+            "exclude_devueltos": ["1" if exclude_devueltos else "0"],
+        }
+        if selected_faculty != "ALL":
+            export_base_params["faculty"] = [selected_faculty]
+        if selected_career != "ALL":
+            export_base_params["career"] = [selected_career]
+
+        active_state = eval_without_state if active_tab == "sin-docente" and show_without_tab else eval_with_state
+        active_selected_columns = selected_eval_without_columns if active_tab == "sin-docente" and show_without_tab else selected_eval_with_columns
+        active_columns_param = "eval_sin_columns" if active_tab == "sin-docente" and show_without_tab else "eval_con_columns"
+        for column in active_selected_columns:
+            export_base_params.setdefault(active_columns_param, []).append(column)
+        for column, filter_value in active_state["filter_values"].items():
+            if filter_value:
+                export_base_params[active_state["column_param_map"][column]] = [filter_value]
+
+        csv_params = {key: list(values) for key, values in export_base_params.items()}
+        csv_params["format"] = ["csv"]
+        xlsx_params = {key: list(values) for key, values in export_base_params.items()}
+        xlsx_params["format"] = ["xlsx"]
+        export_csv_query = urlencode(csv_params, doseq=True)
+        export_xlsx_query = urlencode(xlsx_params, doseq=True)
 
     return render_template(
         "main/publicaciones_evaluacion.html",
+        active_tab=active_tab,
+        show_without_tab=show_without_tab,
         years=years,
         evaluation_year=evaluation_year,
+        selected_faculty=selected_faculty,
+        selected_career=selected_career,
+        publication_year_filter=publication_year_filter,
+        publication_years_available=publication_years_available,
+        selected_period_label=selected_period_label,
+        exclude_devueltos=exclude_devueltos,
+        faculty_options=faculty_options,
+        career_options=career_options,
         source_years=source_years,
-        rows=eval_state["rows"],
-        eval_state=eval_state,
+        with_rows=eval_with_state["rows"],
+        without_rows=eval_without_state["rows"],
+        eval_with_columns=eval_with_columns,
+        eval_without_columns=eval_without_columns,
+        selected_eval_with_columns=selected_eval_with_columns,
+        selected_eval_without_columns=selected_eval_without_columns,
+        eval_with_state=eval_with_state,
+        eval_without_state=eval_without_state,
+        tab_with_query=tab_with_query,
+        tab_without_query=tab_without_query,
+        export_csv_query=export_csv_query,
+        export_xlsx_query=export_xlsx_query,
         summary=summary,
     )
+
+
+@main_bp.route("/evaluacion/publicaciones/export")
+@login_required
+def publicaciones_evaluacion_export():
+    active_tab = request.args.get("tab", type=str, default="con-docente").strip().lower()
+    if active_tab not in {"con-docente", "sin-docente"}:
+        active_tab = "con-docente"
+
+    evaluation_year = request.args.get("year", type=int)
+    selected_faculty = request.args.get("faculty", type=str, default="ALL")
+    selected_career = request.args.get("career", type=str, default="ALL")
+    publication_year_filter = request.args.get("pub_year", type=str, default="ALL")
+    exclude_devueltos_values = request.args.getlist("exclude_devueltos")
+    if exclude_devueltos_values:
+        exclude_devueltos = "1" in exclude_devueltos_values
+    else:
+        exclude_devueltos = True
+    export_format = request.args.get("format", type=str, default="csv").lower()
+
+    if not evaluation_year:
+        flash("Debes seleccionar un año para exportar.", "error")
+        return redirect(url_for("main.publicaciones_evaluacion"))
+
+    source_years = []
+    with_teachers_rows = []
+    without_teachers_rows = []
+    publication_years_available = []
+
+    default_source_years = [evaluation_year - 1, evaluation_year - 2, evaluation_year - 3]
+    all_publication_years = [
+        row[0]
+        for row in db.session.query(Publication.publication_year)
+        .filter(Publication.publication_year.isnot(None))
+        .distinct()
+        .order_by(Publication.publication_year.desc())
+        .all()
+    ]
+    publication_years_available = sorted([int(year) for year in all_publication_years if year], reverse=True)
+
+    if publication_year_filter != "ALL":
+        try:
+            pub_year_int = int(publication_year_filter)
+            if pub_year_int in publication_years_available:
+                source_years = [pub_year_int]
+            else:
+                source_years = default_source_years
+                publication_year_filter = "ALL"
+        except (ValueError, TypeError):
+            source_years = default_source_years
+            publication_year_filter = "ALL"
+    else:
+        source_years = default_source_years
+
+    if selected_faculty != "ALL" or selected_career != "ALL":
+        active_tab = "con-docente"
+
+    teachers_query = Teacher.query.filter(Teacher.year == evaluation_year)
+    if selected_faculty != "ALL":
+        teachers_query = teachers_query.filter(Teacher.faculty == selected_faculty)
+    if selected_career != "ALL":
+        teachers_query = teachers_query.filter(Teacher.career == selected_career)
+
+    teacher_rows = teachers_query.all()
+    teacher_ids = {str(teacher.teacher_id or "").strip() for teacher in teacher_rows if teacher.teacher_id}
+    teacher_name_by_id = {
+        str(teacher.teacher_id or "").strip(): str(teacher.teacher_name or "").strip()
+        for teacher in teacher_rows
+        if teacher.teacher_id
+    }
+
+    publications = (
+        Publication.query.filter(Publication.publication_year.in_(source_years))
+        .order_by(Publication.created_at.desc(), Publication.id.desc())
+        .all()
+    )
+
+    publication_ids = [publication.id for publication in publications]
+    author_rows = []
+    if publication_ids:
+        author_rows = (
+            PublicationAuthor.query.filter(PublicationAuthor.publication_id.in_(publication_ids))
+            .order_by(PublicationAuthor.id.asc())
+            .all()
+        )
+
+    authors_by_publication: dict[int, list[PublicationAuthor]] = defaultdict(list)
+    for publication_author in author_rows:
+        authors_by_publication[publication_author.publication_id].append(publication_author)
+
+    grouped_by_sequence: dict[str, dict] = {}
+    for publication in publications:
+        publication_year_value = int(publication.publication_year or 0)
+        if publication_year_value not in source_years:
+            continue
+        sequence = str(publication.publication_sequence or "").strip()
+        if sequence:
+            group_key = f"{publication_year_value}::{sequence}"
+        else:
+            group_key = f"{publication_year_value}::__NOSEQ__{publication.id}"
+        grouped = grouped_by_sequence.setdefault(
+            group_key,
+            {
+                "publication_year": publication_year_value,
+                "publication": publication,
+                "authors": [],
+            },
+        )
+        grouped["authors"].extend(authors_by_publication.get(publication.id, []))
+
+    with_available_columns = []
+    without_available_columns = []
+    with_column_seen = set()
+    without_column_seen = set()
+    excluded_grouped_columns = {
+        "PARTICIPACION",
+        "COD UNIDAD",
+        "COD SUBUNIDAD",
+        "COD PAR EMPLEAD",
+        "TIPO DOCUMENTO",
+        "NUMERO IDENTIFICACION",
+        "PRIMER NOMBRE",
+        "SEGUNDO NOMBRE",
+        "APELLIDO PAT",
+        "APELLIDO MAT",
+        "FACULTAD",
+        "TIPO EMPLEADO",
+    }
+
+    for grouped in grouped_by_sequence.values():
+        publication = grouped["publication"]
+        publication_year_value = grouped["publication_year"]
+        publication_authors = grouped["authors"]
+        first_author = publication_authors[0] if publication_authors else None
+        base_payload = _publication_row_payload(publication, first_author) if first_author else {
+            "SECUENCIA": publication.publication_sequence or "",
+            "COD TIPO": publication.publication_type or "",
+            "ANIO PUBLICACION": str(publication.publication_year or ""),
+            "DESCRIPCION": publication.title or "",
+            "BASE": publication.source_base or "",
+            "INDICE Q": publication.quartile or "",
+            "NOMBRE REVISTA": publication.journal_name or "",
+        }
+
+        if exclude_devueltos:
+            has_devueltos = False
+            for author in publication_authors:
+                row_json = author.source_row_json or {}
+                finalizar_value = str(row_json.get("FINALIZAR", "") or "").strip().upper()
+                if finalizar_value == "DEVUELTOS":
+                    has_devueltos = True
+                    break
+            if has_devueltos:
+                continue
+
+        ordered_author_ids = []
+        ordered_author_names = []
+        seen_author_ids = set()
+        for author in publication_authors:
+            num_id, full_name = _extract_author_identity(author)
+            if not num_id or num_id in seen_author_ids:
+                continue
+            seen_author_ids.add(num_id)
+            ordered_author_ids.append(num_id)
+            ordered_author_names.append(full_name)
+
+        matched_teacher_ids = [num_id for num_id in ordered_author_ids if num_id in teacher_ids]
+        matched_teacher_labels = []
+        for teacher_id in matched_teacher_ids:
+            teacher_name = teacher_name_by_id.get(teacher_id, "")
+            if teacher_name:
+                matched_teacher_labels.append(f"{teacher_id} - {teacher_name}")
+            else:
+                matched_teacher_labels.append(teacher_id)
+
+        base_payload["AUTORES"] = "; ".join(ordered_author_ids)
+        base_payload["AUTORES NOMBRES"] = "; ".join(ordered_author_names)
+        base_payload["AUTORES DOCENTES"] = "; ".join(matched_teacher_labels)
+        base_payload["TOTAL AUTORES"] = str(len(ordered_author_ids))
+        base_payload["TOTAL DOCENTES"] = str(len(matched_teacher_ids))
+
+        for excluded_column in excluded_grouped_columns:
+            base_payload.pop(excluded_column, None)
+
+        row_payload = {str(key): "" if value is None else str(value) for key, value in base_payload.items()}
+
+        if matched_teacher_ids:
+            with_teachers_rows.append(row_payload)
+            for key in row_payload.keys():
+                if key not in with_column_seen:
+                    with_column_seen.add(key)
+                    with_available_columns.append(key)
+        else:
+            without_teachers_rows.append(row_payload)
+            for key in row_payload.keys():
+                if key not in without_column_seen:
+                    without_column_seen.add(key)
+                    without_available_columns.append(key)
+
+    eval_with_default_columns = [
+        "SECUENCIA",
+        "ANIO PUBLICACION",
+        "COD TIPO",
+        "DESCRIPCION",
+        "AUTORES",
+        "AUTORES NOMBRES",
+        "AUTORES DOCENTES",
+        "TOTAL DOCENTES",
+        "BASE",
+        "INDICE Q",
+        "NOMBRE REVISTA",
+    ]
+    eval_without_default_columns = [
+        "SECUENCIA",
+        "ANIO PUBLICACION",
+        "COD TIPO",
+        "DESCRIPCION",
+        "AUTORES",
+        "AUTORES NOMBRES",
+        "TOTAL AUTORES",
+        "BASE",
+        "INDICE Q",
+        "NOMBRE REVISTA",
+    ]
+
+    with_available_set = set(with_available_columns)
+    eval_with_columns = [column for column in eval_with_default_columns if column in with_available_set] + [
+        column for column in with_available_columns if column not in eval_with_default_columns
+    ]
+    if not eval_with_columns:
+        eval_with_columns = list(eval_with_default_columns)
+
+    without_available_set = set(without_available_columns)
+    eval_without_columns = [column for column in eval_without_default_columns if column in without_available_set] + [
+        column for column in without_available_columns if column not in eval_without_default_columns
+    ]
+    if not eval_without_columns:
+        eval_without_columns = list(eval_without_default_columns)
+
+    requested_eval_with_columns = [
+        column for column in request.args.getlist("eval_con_columns") if column in eval_with_columns
+    ]
+    selected_eval_with_columns = requested_eval_with_columns or [
+        "SECUENCIA",
+        "ANIO PUBLICACION",
+        "COD TIPO",
+        "DESCRIPCION",
+        "AUTORES",
+        "AUTORES NOMBRES",
+        "AUTORES DOCENTES",
+        "TOTAL DOCENTES",
+    ]
+    requested_eval_without_columns = [
+        column for column in request.args.getlist("eval_sin_columns") if column in eval_without_columns
+    ]
+    selected_eval_without_columns = requested_eval_without_columns or [
+        "SECUENCIA",
+        "ANIO PUBLICACION",
+        "COD TIPO",
+        "DESCRIPCION",
+        "AUTORES",
+        "AUTORES NOMBRES",
+        "TOTAL AUTORES",
+    ]
+
+    eval_with_state = _filter_and_paginate_rows(with_teachers_rows, request.args, selected_eval_with_columns, "eval_con")
+    eval_without_state = _filter_and_paginate_rows(without_teachers_rows, request.args, selected_eval_without_columns, "eval_sin")
+
+    export_columns = selected_eval_without_columns if active_tab == "sin-docente" else selected_eval_with_columns
+    export_rows = eval_without_state["filtered_rows"] if active_tab == "sin-docente" else eval_with_state["filtered_rows"]
+
+    if export_format == "xlsx":
+        df = pd.DataFrame(export_rows, columns=export_columns)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Publicaciones")
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=publicaciones_evaluacion_{active_tab}_{evaluation_year}.xlsx"},
+        )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(export_columns)
+    for row in export_rows:
+        writer.writerow([row.get(column, "") for column in export_columns])
+
+    return Response(
+        "\ufeff" + output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=publicaciones_evaluacion_{active_tab}_{evaluation_year}.csv"},
+    )
+
+
+@main_bp.route("/configuraciones/tipos-publicacion", methods=["GET", "POST", "DELETE"])
+@login_required
+@csrf.exempt
+def config_publication_types():
+    """Manage publication type labels equivalences."""
+    if request.method == "DELETE":
+        try:
+            data = request.get_json() or {}
+            type_code = (data.get("type_code") or "").strip().upper()
+            if not type_code:
+                return jsonify({"error": "Código es requerido"}), 400
+
+            # Mark code as excluded so it disappears from list even if it exists in publications
+            excluded = PublicationTypeExcluded.query.filter_by(type_code=type_code).first()
+            if not excluded:
+                db.session.add(PublicationTypeExcluded(type_code=type_code))
+
+            # Remove label mapping if present
+            pt = PublicationTypeLabel.query.filter_by(type_code=type_code).first()
+            if pt:
+                db.session.delete(pt)
+
+            db.session.commit()
+            return jsonify({"success": True})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+    
+    if request.method == "POST":
+        try:
+            data = request.get_json() or {}
+            type_code = data.get("type_code", "").strip().upper()
+            label = data.get("label", "").strip()
+
+            if not type_code or not label:
+                return jsonify({"error": "Código y etiqueta son requeridos"}), 400
+
+            pt = PublicationTypeLabel.query.filter_by(type_code=type_code).first()
+            if pt:
+                pt.label = label
+                pt.description = data.get("description", "").strip() or None
+                pt.updated_at = datetime.utcnow()
+            else:
+                pt = PublicationTypeLabel(
+                    type_code=type_code,
+                    label=label,
+                    description=data.get("description", "").strip() or None,
+                )
+                db.session.add(pt)
+
+            # If code was excluded before, remove exclusion when user saves/adds again
+            excluded = PublicationTypeExcluded.query.filter_by(type_code=type_code).first()
+            if excluded:
+                db.session.delete(excluded)
+
+            db.session.commit()
+            return jsonify({"success": True, "id": pt.id})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+
+    excluded_codes = {
+        row.type_code
+        for row in PublicationTypeExcluded.query.with_entities(PublicationTypeExcluded.type_code).all()
+        if row.type_code
+    }
+
+    # Get all distinct publication types from publications table
+    all_types_in_db = db.session.query(Publication.publication_type).distinct().order_by(Publication.publication_type).all()
+    all_types = sorted(set([t[0] for t in all_types_in_db if t[0] and t[0] not in excluded_codes]))
+
+    # Get existing labels
+    labels = {
+        pt.type_code: pt
+        for pt in PublicationTypeLabel.query.all()
+        if pt.type_code not in excluded_codes
+    }
+
+    # Include custom codes created manually even if they are not in publications
+    all_codes = sorted(set(all_types) | set(labels.keys()))
+
+    # Build list of all types with their labels
+    types_list = []
+    for type_code in all_codes:
+        if type_code in labels:
+            pt = labels[type_code]
+            types_list.append({"type_code": type_code, "label": pt.label, "description": pt.description or "", "id": pt.id})
+        else:
+            types_list.append({"type_code": type_code, "label": "", "description": "", "id": None})
+
+    return render_template("main/config_publication_types.html", types_list=types_list)
+
+
+@main_bp.route("/configuraciones/bases", methods=["GET", "POST", "DELETE"])
+@login_required
+@csrf.exempt
+def config_bases():
+    """Manage base labels equivalences."""
+    if request.method == "DELETE":
+        try:
+            data = request.get_json() or {}
+            base_code = (data.get("base_code") or "").strip()
+            if not base_code:
+                return jsonify({"error": "Código es requerido"}), 400
+
+            # Mark code as excluded so it disappears from list even if it exists in publications
+            excluded = BaseExcluded.query.filter_by(base_code=base_code).first()
+            if not excluded:
+                db.session.add(BaseExcluded(base_code=base_code))
+
+            # Remove label mapping if present
+            base = BaseLabel.query.filter_by(base_code=base_code).first()
+            if base:
+                db.session.delete(base)
+
+            db.session.commit()
+            return jsonify({"success": True})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+    
+    if request.method == "POST":
+        try:
+            data = request.get_json() or {}
+            base_code = data.get("base_code", "").strip()
+            label = data.get("label", "").strip()
+
+            if not base_code or not label:
+                return jsonify({"error": "Código y etiqueta son requeridos"}), 400
+
+            base = BaseLabel.query.filter_by(base_code=base_code).first()
+            if base:
+                base.label = label
+                base.description = data.get("description", "").strip() or None
+                base.updated_at = datetime.utcnow()
+            else:
+                base = BaseLabel(
+                    base_code=base_code,
+                    label=label,
+                    description=data.get("description", "").strip() or None,
+                )
+                db.session.add(base)
+
+            # If code was excluded before, remove exclusion when user saves/adds again
+            excluded = BaseExcluded.query.filter_by(base_code=base_code).first()
+            if excluded:
+                db.session.delete(excluded)
+
+            db.session.commit()
+            return jsonify({"success": True, "id": base.id})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+
+    excluded_codes = {
+        row.base_code
+        for row in BaseExcluded.query.with_entities(BaseExcluded.base_code).all()
+        if row.base_code
+    }
+
+    # Get all distinct bases from publications table
+    all_bases_in_db = db.session.query(Publication.source_base).distinct().order_by(Publication.source_base).all()
+    all_bases = sorted(set([b[0] for b in all_bases_in_db if b[0] and b[0] not in excluded_codes]))
+
+    # Get existing labels
+    labels = {
+        base.base_code: base
+        for base in BaseLabel.query.all()
+        if base.base_code not in excluded_codes
+    }
+
+    # Include custom codes created manually even if they are not in publications
+    all_codes = sorted(set(all_bases) | set(labels.keys()))
+
+    # Build list of all bases with their labels
+    bases_list = []
+    for base_code in all_codes:
+        if base_code in labels:
+            base = labels[base_code]
+            bases_list.append({"base_code": base_code, "label": base.label, "description": base.description or "", "id": base.id})
+        else:
+            bases_list.append({"base_code": base_code, "label": "", "description": "", "id": None})
+
+    return render_template("main/config_bases.html", bases_list=bases_list)

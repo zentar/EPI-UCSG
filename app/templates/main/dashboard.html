@@ -22,9 +22,15 @@
     </article>
 
     <article class="card">
-        <h2>Cruce 3 años</h2>
+        <h2>Publicaciones</h2>
         <p>Evalua N usando N-1, N-2 y N-3.</p>
-        <a class="button" href="{{ url_for('main.cruce') }}">Abrir módulo</a>
+        <a class="button" href="{{ url_for('main.publicaciones_evaluacion') }}">Abrir módulo</a>
+    </article>
+
+    <article class="card">
+        <h2>PAC</h2>
+        <p>Calcula el indicador PAC con periodo, cuartil y dedicación docente.</p>
+        <a class="button" href="{{ url_for('main.evaluacion_pac') }}">Abrir módulo</a>
     </article>
 </section>
 {% endblock %}

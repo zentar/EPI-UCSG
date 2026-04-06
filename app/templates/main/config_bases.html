@@ -1,0 +1,160 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="card">
+    <h2>Equivalencias: Bases</h2>
+    <p style="color: var(--muted); font-size: 0.9rem; margin-top: -8px;">Configure las etiquetas para cada base de datos indexadora</p>
+
+    <div style="margin-top: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: #fafafa;">
+        <h3 style="margin-top: 0; font-size: 0.95rem;">Agregar nueva equivalencia</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-items: end;">
+            <label style="display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 0.85rem; font-weight: 600; color: var(--muted);">Código</span>
+                <input type="text" id="new-base-code" placeholder="Ej: SCOPUS" style="padding: 8px; border: 1px solid var(--line); border-radius: 4px;">
+            </label>
+            <label style="display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 0.85rem; font-weight: 600; color: var(--muted);">Etiqueta</span>
+                <input type="text" id="new-base-label" placeholder="Ej: Scopus" style="padding: 8px; border: 1px solid var(--line); border-radius: 4px;">
+            </label>
+            <label style="display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 0.85rem; font-weight: 600; color: var(--muted);">Descripción (opcional)</span>
+                <input type="text" id="new-base-description" placeholder="Descripción" style="padding: 8px; border: 1px solid var(--line); border-radius: 4px;">
+            </label>
+            <button id="add-new-base" class="button" style="background: #1e6b3c; padding: 8px 16px; font-size: 0.9rem;">+ Agregar</button>
+        </div>
+    </div>
+
+    <div style="margin-top: 20px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+            <thead>
+                <tr style="background: #f5f5f5; border-bottom: 2px solid var(--line);">
+                    <th style="padding: 12px; text-align: left; font-weight: 600;">Código</th>
+                    <th style="padding: 12px; text-align: left; font-weight: 600;">Etiqueta</th>
+                    <th style="padding: 12px; text-align: left; font-weight: 600;">Descripción</th>
+                    <th style="padding: 12px; text-align: center; font-weight: 600; width: 160px;">Acciones</th>
+                </tr>
+            </thead>
+            <tbody id="bases-table-body">
+                {% for item in bases_list %}
+                <tr style="border-bottom: 1px solid var(--line);" data-base-code="{{ item.base_code }}" data-base-id="{{ item.id or '' }}">
+                    <td style="padding: 12px; vertical-align: middle; background: #fafafa; font-weight: 500;">{{ item.base_code }}</td>
+                    <td style="padding: 12px;">
+                        <input type="text" class="label-input" value="{{ item.label }}" placeholder="Ej: Scopus" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px;">
+                    </td>
+                    <td style="padding: 12px;">
+                        <input type="text" class="description-input" value="{{ item.description }}" placeholder="Descripción opcional" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px;">
+                    </td>
+                    <td style="padding: 12px; text-align: center; display: flex; gap: 6px; justify-content: center;">
+                        <button class="button save-btn" style="background: var(--ok); padding: 6px 12px; font-size: 0.85rem;">Guardar</button>
+                        <button class="button delete-btn" style="background: var(--error); padding: 6px 12px; font-size: 0.85rem;">Eliminar</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    document.getElementById('add-new-base').addEventListener('click', async (e) => {
+        e.preventDefault();
+        const code = document.getElementById('new-base-code').value.trim();
+        const label = document.getElementById('new-base-label').value.trim();
+        const description = document.getElementById('new-base-description').value.trim();
+
+        if (!code || !label) {
+            alert('Código y etiqueta son requeridos');
+            return;
+        }
+
+        try {
+            const response = await fetch('{{ url_for("main.config_bases") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ base_code: code, label, description })
+            });
+
+            const text = await response.text();
+            const data = JSON.parse(text);
+            if (data.success) {
+                document.getElementById('new-base-code').value = '';
+                document.getElementById('new-base-label').value = '';
+                document.getElementById('new-base-description').value = '';
+                location.reload();
+            } else {
+                alert('Error: ' + (data.error || 'Error desconocido'));
+            }
+        } catch (err) {
+            alert('Error al agregar: ' + err.message);
+        }
+    });
+
+    document.querySelectorAll('.save-btn').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const row = btn.closest('tr');
+            const baseCode = row.dataset.baseCode;
+            const label = row.querySelector('.label-input').value.trim();
+            const description = row.querySelector('.description-input').value.trim();
+
+            if (!label) {
+                alert('La etiqueta no puede estar vacía');
+                return;
+            }
+
+            try {
+                const response = await fetch('{{ url_for("main.config_bases") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ base_code: baseCode, label, description })
+                });
+
+                const text = await response.text();
+                const data = JSON.parse(text);
+                if (data.success) {
+                    btn.style.background = 'var(--ok)';
+                    btn.textContent = '✓ Guardado';
+                    setTimeout(() => {
+                        btn.textContent = 'Guardar';
+                    }, 1500);
+                } else {
+                    alert('Error: ' + (data.error || 'Error desconocido'));
+                }
+            } catch (err) {
+                alert('Error al guardar: ' + err.message);
+            }
+        });
+    });
+
+    document.querySelectorAll('.delete-btn').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const row = btn.closest('tr');
+            const baseCode = row.dataset.baseCode;
+
+            if (!confirm(`¿Eliminar la equivalencia para ${baseCode}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('{{ url_for("main.config_bases") }}', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ base_code: baseCode })
+                });
+
+                const text = await response.text();
+                const data = JSON.parse(text);
+                if (data.success) {
+                    row.style.opacity = '0.5';
+                    setTimeout(() => location.reload(), 300);
+                } else {
+                    alert('Error: ' + (data.error || 'Error desconocido'));
+                }
+            } catch (err) {
+                alert('Error al eliminar: ' + err.message);
+            }
+        });
+    });
+</script>
+{% endblock %}

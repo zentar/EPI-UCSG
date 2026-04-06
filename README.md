@@ -78,6 +78,35 @@ cp .env.example .env
 python run.py
 ```
 
+## Migraciones de base de datos
+
+El proyecto usa Flask-Migrate (Alembic) para versionar cambios de esquema.
+
+Comandos habituales con Docker:
+
+```bash
+# Ver revisión actual
+docker compose exec web flask --app run.py db current
+
+# Crear una nueva migración desde cambios en modelos
+docker compose exec web flask --app run.py db migrate -m "descripcion del cambio"
+
+# Aplicar migraciones pendientes
+docker compose exec web flask --app run.py db upgrade
+
+# Ver historial de revisiones
+docker compose exec web flask --app run.py db history
+```
+
+Comandos equivalentes sin Docker:
+
+```bash
+flask --app run.py db current
+flask --app run.py db migrate -m "descripcion del cambio"
+flask --app run.py db upgrade
+flask --app run.py db history
+```
+
 ## Estructura inicial
 
 ```text

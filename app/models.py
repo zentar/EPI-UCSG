@@ -97,3 +97,59 @@ class ProcessLog(db.Model):
     metadata_json = db.Column(db.JSON, nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PacArtisticSetting(db.Model):
+    __tablename__ = "pac_artistic_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    evaluation_year = db.Column(db.Integer, nullable=False, index=True)
+    faculty_scope = db.Column(db.String(120), nullable=False, default="ALL")
+    career_scope = db.Column(db.String(120), nullable=False, default="ALL")
+    artistic_value = db.Column(db.Float, nullable=False, default=10.0)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "evaluation_year",
+            "faculty_scope",
+            "career_scope",
+            name="uq_pac_artistic_scope",
+        ),
+    )
+
+
+class PublicationTypeLabel(db.Model):
+    __tablename__ = "publication_type_labels"
+
+    id = db.Column(db.Integer, primary_key=True)
+    type_code = db.Column(db.String(10), unique=True, nullable=False, index=True)
+    label = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class BaseLabel(db.Model):
+    __tablename__ = "base_labels"
+
+    id = db.Column(db.Integer, primary_key=True)
+    base_code = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    label = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class PublicationTypeExcluded(db.Model):
+    __tablename__ = "publication_type_excluded"
+
+    id = db.Column(db.Integer, primary_key=True)
+    type_code = db.Column(db.String(10), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BaseExcluded(db.Model):
+    __tablename__ = "base_excluded"
+
+    id = db.Column(db.Integer, primary_key=True)
+    base_code = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

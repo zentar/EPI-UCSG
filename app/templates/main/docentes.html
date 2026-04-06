@@ -122,8 +122,8 @@
         </form>
 
         <div class="tab-bar">
-            <a class="tab-link {% if active_tab == 'registros' %}active{% endif %}" href="{{ url_for('main.docentes', year=selected_year, faculty=selected_faculty, career=selected_career, tab='registros') }}">Registros{% if selected_year and active_tab == 'registros' %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
-            <a class="tab-link {% if active_tab == 'frecuencias' %}active{% endif %}" href="{{ url_for('main.docentes', year=selected_year, faculty=selected_faculty, career=selected_career, tab='frecuencias') }}">Informe{% if selected_year %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
+            <a class="tab-link {% if active_tab == 'registros' %}active{% endif %}" href="{{ url_for('main.docentes', year=selected_year, faculty=selected_faculty, career=selected_career, tab='registros', docentes_page_size=teachers_page_state.page_size) }}">Registros{% if selected_year and active_tab == 'registros' %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
+            <a class="tab-link {% if active_tab == 'frecuencias' %}active{% endif %}" href="{{ url_for('main.docentes', year=selected_year, faculty=selected_faculty, career=selected_career, tab='frecuencias', docentes_page_size=teachers_page_state.page_size) }}">Informe{% if selected_year %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
         </div>
     </article>
 
@@ -173,6 +173,31 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between;">
+            <label class="filter-label" style="max-width: 190px; margin:0;">
+                Registros por página
+                <select form="docentes-filter-form" name="docentes_page_size" class="filter-select" onchange="this.form.submit()">
+                    {% for option in teachers_page_state.page_size_options %}
+                    <option value="{{ option }}" {% if teachers_page_state.page_size == option %}selected{% endif %}>{{ option }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                {% if teachers_page_state.prev_query %}
+                <a href="{{ url_for('main.docentes') }}?{{ teachers_page_state.prev_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Anterior</a>
+                {% endif %}
+                {% for item in teachers_page_state.page_links %}
+                    {% if item.current %}
+                    <span style="font-size:0.85rem; color:#fff; background:var(--crimson); border:1px solid var(--crimson); border-radius:6px; padding:7px 12px;">{{ item.number }}</span>
+                    {% else %}
+                    <a href="{{ url_for('main.docentes') }}?{{ item.query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">{{ item.number }}</a>
+                    {% endif %}
+                {% endfor %}
+                {% if teachers_page_state.next_query %}
+                <a href="{{ url_for('main.docentes') }}?{{ teachers_page_state.next_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Siguiente</a>
+                {% endif %}
+            </div>
         </div>
     </article>
 

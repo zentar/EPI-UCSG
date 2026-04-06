@@ -118,7 +118,7 @@
             <input type="hidden" name="tab" value="{{ active_tab }}">
             <div class="publication-filter-grid">
                 <label>
-                    Ano
+                    Año
                     <select id="filter-year" name="year" style="padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width:100%;">
                         {% for year in years %}
                         <option value="{{ year }}" {% if selected_year == year %}selected{% endif %}>{{ year }}</option>
@@ -177,6 +177,8 @@
                 <form id="publication-columns-form" method="get" style="margin-top:16px; display:grid; gap:14px;">
                     <input type="hidden" name="year" value="{{ selected_year or '' }}">
                     <input type="hidden" name="search" value="{{ search_query }}">
+                    <input type="hidden" name="tab" value="{{ active_tab }}">
+                    <input type="hidden" name="pubreg_page_size" value="{{ publication_page_state.page_size }}">
                     {% for column in selected_columns %}
                         {% if visible_filter_values.get(column) %}
                         <input type="hidden" name="{{ column_param_map[column] }}" value="{{ visible_filter_values.get(column, '') }}">
@@ -205,6 +207,7 @@
     {% if active_tab == 'listado' %}
     <article class="card">
         <h2>Registros filtrados{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <p style="margin-top:8px; color:var(--muted);">Mostrando {{ publication_page_state.total_filtered }} registro(s), página {{ publication_page_state.page }} de {{ publication_page_state.total_pages }}.</p>
         <div style="margin-top: 16px; overflow-x: auto;">
             <table style="width: 100%; border-collapse: collapse;">
                 <thead>
@@ -237,6 +240,31 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between;">
+            <label style="display:flex; flex-direction:column; gap:5px; font-size:0.8rem; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; max-width:190px; margin:0;">
+                Registros por página
+                <select form="publicaciones-filter-form" name="pubreg_page_size" style="padding:9px 12px; border:1px solid var(--line); border-radius:6px; font:inherit; background:#fff; color:var(--ink); width:100%;" onchange="this.form.submit()">
+                    {% for option in publication_page_state.page_size_options %}
+                    <option value="{{ option }}" {% if publication_page_state.page_size == option %}selected{% endif %}>{{ option }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                {% if publication_page_state.prev_query %}
+                <a href="{{ url_for('main.publicaciones') }}?{{ publication_page_state.prev_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Anterior</a>
+                {% endif %}
+                {% for item in publication_page_state.page_links %}
+                    {% if item.current %}
+                    <span style="font-size:0.85rem; color:#fff; background:var(--crimson); border:1px solid var(--crimson); border-radius:6px; padding:7px 12px;">{{ item.number }}</span>
+                    {% else %}
+                    <a href="{{ url_for('main.publicaciones') }}?{{ item.query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">{{ item.number }}</a>
+                    {% endif %}
+                {% endfor %}
+                {% if publication_page_state.next_query %}
+                <a href="{{ url_for('main.publicaciones') }}?{{ publication_page_state.next_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Siguiente</a>
+                {% endif %}
+            </div>
         </div>
     </article>
     {% endif %}

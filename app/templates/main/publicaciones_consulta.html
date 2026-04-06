@@ -70,6 +70,33 @@
         font-size: 0.82rem;
         background: #fff;
     }
+
+    .tab-bar {
+        display: flex;
+        gap: 0;
+        border-bottom: 2px solid var(--line);
+        margin-top: 18px;
+    }
+
+    .tab-link {
+        text-decoration: none;
+        padding: 8px 18px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--muted);
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: color 0.15s, border-color 0.15s;
+    }
+
+    .tab-link:hover {
+        color: var(--ink);
+    }
+
+    .tab-link.active {
+        color: var(--crimson);
+        border-bottom-color: var(--crimson);
+    }
 </style>
 <section class="grid" style="gap: 18px;">
     <article class="card">
@@ -79,6 +106,7 @@
         </div>
 
         <form id="publicaciones-consulta-filter-form" method="get" style="display:grid; gap: 16px;">
+            <input type="hidden" name="tab" value="{{ active_tab }}">
             <div class="publication-filter-grid">
                 <label>
                     Ano
@@ -89,10 +117,34 @@
                     </select>
                 </label>
                 <label>
+                    Facultad
+                    <select id="filter-faculty" name="faculty" style="padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width:100%;">
+                        <option value="ALL" {% if selected_faculty == 'ALL' %}selected{% endif %}>— Todas las facultades —</option>
+                        {% for faculty in faculty_options %}
+                        <option value="{{ faculty }}" {% if selected_faculty == faculty %}selected{% endif %}>{{ faculty }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    Carrera{% if selected_faculty == 'ALL' %} <span style="font-weight:400; color:var(--muted);">(selecciona facultad primero)</span>{% endif %}
+                    <select id="filter-career" name="career" style="padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; width:100%;" {% if selected_faculty == 'ALL' %}disabled{% endif %}>
+                        <option value="ALL" {% if selected_career == 'ALL' %}selected{% endif %}>— Todas las carreras —</option>
+                        {% for career in career_options %}
+                        <option value="{{ career }}" {% if selected_career == career %}selected{% endif %}>{{ career }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
                     Buscador general
                     <input class="publication-filter-input" id="publication-search" name="search" type="text" value="{{ search_query }}" placeholder="Buscar en columnas visibles">
                 </label>
             </div>
+
+            <label style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:var(--ink);">
+                <input type="hidden" name="exclude_devueltos" value="0">
+                <input type="checkbox" name="exclude_devueltos" value="1" {% if exclude_devueltos %}checked{% endif %}>
+                Excluir registros con FINALIZAR = DEVUELTOS
+            </label>
 
             <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                 {% for column in selected_columns %}
@@ -129,7 +181,14 @@
 
                 <form id="publication-columns-form" method="get" style="margin-top:16px; display:grid; gap:14px;">
                     <input type="hidden" name="year" value="{{ selected_year or '' }}">
+                    <input type="hidden" name="faculty" value="{{ selected_faculty }}">
+                    <input type="hidden" name="career" value="{{ selected_career }}">
+                    {% if exclude_devueltos %}
+                    <input type="hidden" name="exclude_devueltos" value="1">
+                    {% endif %}
                     <input type="hidden" name="search" value="{{ search_query }}">
+                    <input type="hidden" name="tab" value="{{ active_tab }}">
+                    <input type="hidden" name="pubcon_page_size" value="{{ publication_page_state.page_size }}">
                     {% for column in selected_columns %}
                         {% if visible_filter_values.get(column) %}
                         <input type="hidden" name="{{ column_param_map[column] }}" value="{{ visible_filter_values.get(column, '') }}">
@@ -153,10 +212,17 @@
         </div>
 
         <p style="margin-top:12px; color:var(--muted);">Mostrando {{ filtered_total }} publicacion(es) unicas.</p>
+
+        <div class="tab-bar">
+            <a class="tab-link {% if active_tab == 'listado' %}active{% endif %}" data-tab="listado" href="{{ url_for('main.publicaciones_consulta') }}">Listado{% if selected_year and active_tab == 'listado' %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
+            <a class="tab-link {% if active_tab == 'analisis' %}active{% endif %}" data-tab="analisis" href="{{ url_for('main.publicaciones_consulta') }}">Analisis{% if selected_year and active_tab == 'analisis' %} <span style="font-weight:400; color:var(--muted); font-size:0.82rem;">({{ filtered_total }})</span>{% endif %}</a>
+        </div>
     </article>
 
+    {% if active_tab == 'listado' %}
     <article class="card">
         <h2>Publicaciones con autores{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <p style="margin-top:8px; color:var(--muted);">Mostrando {{ publication_page_state.total_filtered }} registro(s), página {{ publication_page_state.page }} de {{ publication_page_state.total_pages }}.</p>
         <div style="margin-top: 16px; overflow-x: auto;">
             <table style="width: 100%; border-collapse: collapse;">
                 <thead>
@@ -190,7 +256,113 @@
                 </tbody>
             </table>
         </div>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between;">
+            <label style="display:flex; flex-direction:column; gap:5px; font-size:0.8rem; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; max-width:190px; margin:0;">
+                Registros por página
+                <select form="publicaciones-consulta-filter-form" name="pubcon_page_size" style="padding:9px 12px; border:1px solid var(--line); border-radius:6px; font:inherit; background:#fff; color:var(--ink); width:100%;" onchange="this.form.submit()">
+                    {% for option in publication_page_state.page_size_options %}
+                    <option value="{{ option }}" {% if publication_page_state.page_size == option %}selected{% endif %}>{{ option }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                {% if publication_page_state.prev_query %}
+                <a href="{{ url_for('main.publicaciones_consulta') }}?{{ publication_page_state.prev_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Anterior</a>
+                {% endif %}
+                {% for item in publication_page_state.page_links %}
+                    {% if item.current %}
+                    <span style="font-size:0.85rem; color:#fff; background:var(--crimson); border:1px solid var(--crimson); border-radius:6px; padding:7px 12px;">{{ item.number }}</span>
+                    {% else %}
+                    <a href="{{ url_for('main.publicaciones_consulta') }}?{{ item.query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">{{ item.number }}</a>
+                    {% endif %}
+                {% endfor %}
+                {% if publication_page_state.next_query %}
+                <a href="{{ url_for('main.publicaciones_consulta') }}?{{ publication_page_state.next_query }}" style="text-decoration:none; font-size:0.85rem; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:7px 12px;">Siguiente</a>
+                {% endif %}
+            </div>
+        </div>
     </article>
+    {% endif %}
+
+    {% if active_tab == 'analisis' %}
+    <article class="card">
+        <h2>Distribucion por tipo{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Tipo</th>
+                        <th style="text-align:right; width:120px; border-bottom: 1px solid var(--line); padding: 10px;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, total in type_stats %}
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ key }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line); text-align:right; width:120px;">{{ total }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="2" style="padding: 10px;">No hay datos para mostrar.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    <article class="card">
+        <h2>Distribucion por base{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Base</th>
+                        <th style="text-align:right; width:120px; border-bottom: 1px solid var(--line); padding: 10px;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, total in base_stats %}
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ key }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line); text-align:right; width:120px;">{{ total }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="2" style="padding: 10px;">No hay datos para mostrar.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    <article class="card">
+        <h2>Distribucion por cuartil{% if selected_year %} ({{ selected_year }}){% endif %}</h2>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; border-bottom: 1px solid var(--line); padding: 10px;">Cuartil</th>
+                        <th style="text-align:right; width:120px; border-bottom: 1px solid var(--line); padding: 10px;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, total in quartile_stats %}
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line);">{{ key }}</td>
+                        <td style="padding: 10px; border-bottom: 1px solid var(--line); text-align:right; width:120px;">{{ total }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="2" style="padding: 10px;">No hay datos para mostrar.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% endif %}
 </section>
 
 <script>
@@ -248,15 +420,37 @@
         saveSelectedColumns(currentSelectedColumns);
 
         const yearSelect = document.getElementById('filter-year');
+        const facultySelect = document.getElementById('filter-faculty');
+        const careerSelect = document.getElementById('filter-career');
         const searchInput = document.getElementById('publication-search');
         const modal = document.getElementById('publication-columns-modal');
         const openModal = document.getElementById('open-columns-modal');
         const closeModal = document.getElementById('close-columns-modal');
         const columnsForm = document.getElementById('publication-columns-form');
+        const tabLinks = document.querySelectorAll('.tab-link[data-tab]');
         const headerFilters = document.querySelectorAll('.publication-header-filter');
         let reactiveDebounce = null;
 
+        tabLinks.forEach((link) => {
+            const tabName = link.getAttribute('data-tab');
+            if (!tabName) return;
+            const params = new URLSearchParams(window.location.search);
+            params.set('tab', tabName);
+            const query = params.toString();
+            link.href = `${window.location.pathname}${query ? `?${query}` : ''}`;
+        });
+
         if (yearSelect) yearSelect.addEventListener('change', () => form.submit());
+        if (facultySelect) {
+            facultySelect.addEventListener('change', () => {
+                form.submit();
+            });
+        }
+        if (careerSelect) {
+            careerSelect.addEventListener('change', () => {
+                form.submit();
+            });
+        }
 
         const submitReactive = () => {
             if (reactiveDebounce) {

@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    .filter-select {
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+        background: #fff;
+        color: var(--ink);
+        width: 100%;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b6b6c' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 34px;
+        cursor: pointer;
+    }
+
+    .filter-label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .filter-input {
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+        background: #fff;
+        color: var(--ink);
+        width: 100%;
+    }
+
+    .filter-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: end;
+    }
+
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+    }
+
+    .stat-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fafafa;
+    }
+
+    .stat-card strong {
+        display: block;
+        font-size: 1.15rem;
+        color: var(--ink);
+    }
+
+    .stat-card span {
+        font-size: 0.78rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+</style>
+
+<section class="card">
+    <h2 style="margin:0; border:none; padding:0;">Evaluación PAC</h2>
+
+    <form id="pac-filter-form" method="get" style="margin-top:14px; display:grid; gap:12px;">
+        <input type="hidden" id="set-artistica" name="set_artistica" value="0">
+        <div class="filter-grid">
+            <label class="filter-label">
+                Año evaluación
+                <select id="filter-year" name="year" class="filter-select">
+                    {% for year in years %}
+                    <option value="{{ year }}" {% if evaluation_year == year %}selected{% endif %}>{{ year }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Facultad
+                <select id="filter-faculty" name="faculty" class="filter-select">
+                    <option value="ALL" {% if selected_faculty == 'ALL' %}selected{% endif %}>- Todas las facultades -</option>
+                    {% for faculty in faculty_options %}
+                    <option value="{{ faculty }}" {% if selected_faculty == faculty %}selected{% endif %}>{{ faculty }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Carrera{% if selected_faculty == 'ALL' %} <span style="font-weight:400; text-transform:none; letter-spacing:0;">(selecciona facultad primero)</span>{% endif %}
+                <select id="filter-career" name="career" class="filter-select" {% if selected_faculty == 'ALL' %}disabled{% endif %}>
+                    <option value="ALL" {% if selected_career == 'ALL' %}selected{% endif %}>- Todas las carreras -</option>
+                    {% for career in career_options %}
+                    <option value="{{ career }}" {% if selected_career == career %}selected{% endif %}>{{ career }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Período
+                <select id="filter-pub-year" name="pub_year" class="filter-select">
+                    <option value="ALL" {% if publication_year_filter == 'ALL' %}selected{% endif %}>Período evaluación (N-1, N-2, N-3)</option>
+                    {% for year in publication_years_available %}
+                    <option value="{{ year }}" {% if publication_year_filter == year or (publication_year_filter|int == year if publication_year_filter != 'ALL') %}selected{% endif %}>{{ year }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-label">
+                Producción artística
+                <input id="filter-artistica" name="artistica" type="number" min="0" step="0.01" class="filter-input" value="{{ artistica_input }}">
+            </label>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:var(--ink); text-transform:none; letter-spacing:0; font-weight:500;">
+            <input type="hidden" name="exclude_devueltos" value="0">
+            <input id="filter-exclude-devueltos" type="checkbox" name="exclude_devueltos" value="1" {% if exclude_devueltos %}checked{% endif %}>
+            Excluir registros con FINALIZAR = DEVUELTOS
+        </label>
+    </form>
+
+    <p style="margin-top:12px; color:var(--muted);">Período calculado: {{ selected_period_label }}</p>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <strong>{{ summary.docentes_total }}</strong>
+            <span>Docentes considerados</span>
+        </div>
+        <div class="stat-card">
+            <strong>{{ summary.docentes_equivalentes }}</strong>
+            <span>Docentes equivalentes</span>
+        </div>
+        <div class="stat-card">
+            <strong>{{ summary.publicaciones_docentes }}</strong>
+            <span>Publicaciones con docente</span>
+        </div>
+        <div class="stat-card">
+            <strong>{{ summary.numerador }}</strong>
+            <span>Numerador PAC</span>
+        </div>
+        <div class="stat-card">
+            <strong>{% if summary.pac is not none %}{{ summary.pac }}{% else %}-{% endif %}</strong>
+            <span>PAC</span>
+        </div>
+    </div>
+</section>
+
+<section class="grid" style="margin-top:18px; gap:18px;">
+    <article class="card">
+        <h2>Desglose numerador</h2>
+        <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+            <thead>
+                <tr>
+                    <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Componente</th>
+                    <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Total</th>
+                    <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Ponderado</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Artículos</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.articulos_total }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.articulos_ponderados }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Libros</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.libros_total }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.libros_total }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Capítulos</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.capitulos_total }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.capitulos_ponderados }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Producción artística (E)</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.artistica_total }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ summary.artistica_total }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; font-weight:700;">Total numerador</td>
+                    <td style="padding:8px;"></td>
+                    <td style="padding:8px; text-align:right; font-weight:700;">{{ summary.numerador }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </article>
+
+    <article class="card">
+        <h2>Desglose denominador</h2>
+        <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+            <thead>
+                <tr>
+                    <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Dedicación</th>
+                    <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Total</th>
+                    <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Factor</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Tiempo completo</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ denominator_components.tiempo_completo }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">1.0</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Medio tiempo</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ denominator_components.medio_tiempo }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">0.5</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">Tiempo parcial</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ denominator_components.tiempo_parcial }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">0.0</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; border-bottom:1px solid var(--line);">No definida</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ denominator_components.no_definida }}</td>
+                    <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">0.0</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px; font-weight:700;">Docentes equivalentes</td>
+                    <td style="padding:8px;"></td>
+                    <td style="padding:8px; text-align:right; font-weight:700;">{{ summary.docentes_equivalentes }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </article>
+
+    <article class="card">
+        <h2>Ponderación artículos</h2>
+        <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+            <thead>
+                <tr>
+                    <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Cuartil</th>
+                    <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Total</th>
+                    <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">Ponderado</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set ns = namespace(total_count=0, total_weighted=0) %}
+                {% if quartile_stats %}
+                    {% for quartile, total, weighted in quartile_stats %}
+                    {% set ns.total_count = ns.total_count + total %}
+                    {% set ns.total_weighted = ns.total_weighted + weighted %}
+                    <tr>
+                        <td style="padding:8px; border-bottom:1px solid var(--line);">{{ quartile }}</td>
+                        <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ total }}</td>
+                        <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ weighted }}</td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="3" style="padding:8px;">No hay artículos para los filtros.</td>
+                    </tr>
+                {% endif %}
+                <tr>
+                    <td style="padding:8px; font-weight:700;">TOTAL</td>
+                    <td style="padding:8px; text-align:right; font-weight:700;">{{ ns.total_count }}</td>
+                    <td style="padding:8px; text-align:right; font-weight:700;">{{ ns.total_weighted|round(4) }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </article>
+</section>
+
+<script>
+    (() => {
+        const yearSelect = document.getElementById('filter-year');
+        const facultySelect = document.getElementById('filter-faculty');
+        const careerSelect = document.getElementById('filter-career');
+        const pubYearSelect = document.getElementById('filter-pub-year');
+        const artisticaInput = document.getElementById('filter-artistica');
+        const setArtistica = document.getElementById('set-artistica');
+        const excludeDevueltos = document.getElementById('filter-exclude-devueltos');
+        const form = document.getElementById('pac-filter-form');
+        if (!yearSelect || !form) return;
+        yearSelect.addEventListener('change', () => form.submit());
+        if (facultySelect) facultySelect.addEventListener('change', () => form.submit());
+        if (careerSelect) careerSelect.addEventListener('change', () => form.submit());
+        if (pubYearSelect) pubYearSelect.addEventListener('change', () => form.submit());
+        if (artisticaInput) {
+            artisticaInput.addEventListener('change', () => {
+                if (setArtistica) setArtistica.value = '1';
+                form.submit();
+            });
+        }
+        if (excludeDevueltos) excludeDevueltos.addEventListener('change', () => form.submit());
+    })();
+</script>
+{% endblock %}
