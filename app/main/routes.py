@@ -1849,6 +1849,7 @@ def docentes_export():
     career = request.args.get("career", type=str, default="ALL")
     export_format = request.args.get("format", type=str, default="csv").lower()
 
+    
     if not year:
         flash("Debes seleccionar un año para exportar.", "error")
         return redirect(url_for("main.docentes"))
@@ -3716,6 +3717,21 @@ def matrices_export_articulos():
         "INTERCULTURAL",
     ]
     
+    file_name = f"matriz_articulos_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    if export_format == "xlsx":
+        df = pd.DataFrame(matrix_rows, columns=columns)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Artículos")
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={file_name}.xlsx"},
+        )
+    
+    # CSV (default)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(columns)
@@ -3723,9 +3739,8 @@ def matrices_export_articulos():
     for row in matrix_rows:
         writer.writerow([row.get(col, "") for col in columns])
     
-    file_name = f"matriz_articulos_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     return Response(
         "\ufeff" + output.getvalue(),
         mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={file_name}"},
+        headers={"Content-Disposition": f"attachment; filename={file_name}.csv"},
     )

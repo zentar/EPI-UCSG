@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div style="max-width: 900px; margin: 0 auto;">
+    <h1>Matrices de Publicaciones</h1>
+    <p style="color: #6b6b6c; margin-bottom: 20px;">
+        Exporta matriz de publicaciones por docente y año en formato CSV según el esquema institucional.
+    </p>
+
+    <form method="get" style="display: grid; gap: 14px; margin-bottom: 24px;">
+        <div>
+            <label for="year">
+                <strong>Selecciona el año:</strong>
+            </label>
+            <select id="year" name="year" required style="width: 100%; padding: 10px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font: inherit;">
+                <option value="">-- Elige un año --</option>
+                {% for y in years_available %}
+                <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>{{ y }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <a 
+                href="{% if selected_year %}{{ url_for('main.matrices_export_articulos', year=selected_year, format='csv') }}{% else %}javascript:alert('Selecciona un año primero');{% endif %}"
+                class="button"
+                style="text-align: center; text-decoration: none; display: inline-block;"
+            >
+                Descargar Artículos (CSV)
+            </a>
+            <a 
+                href="{% if selected_year %}{{ url_for('main.matrices_export_articulos', year=selected_year, format='xlsx') }}{% else %}javascript:alert('Selecciona un año primero');{% endif %}"
+                class="button"
+                style="text-align: center; text-decoration: none; display: inline-block;"
+            >
+                Descargar Artículos (XLSX)
+            </a>
+        </div>
+    </form>
+
+    {% if selected_year %}
+    <div style="background: #f9f9f9; border-left: 4px solid #A90046; padding: 12px 14px; border-radius: 4px; margin-top: 20px;">
+        <strong>Año seleccionado:</strong> {{ selected_year }}
+        <p style="font-size: 0.9rem; color: #6b6b6c; margin: 6px 0 0;">
+            Se exportarán todos los artículos del año {{ selected_year }}, descartando aquellos con <code>FINALIZAR = "DEVUELTOS"</code>.
+        </p>
+        <p style="font-size: 0.9rem; color: #6b6b6c; margin: 6px 0 0;">
+            Un registro por cada autoría.
+        </p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
