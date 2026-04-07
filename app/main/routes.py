@@ -3644,12 +3644,20 @@ def _build_articles_matrix(year: int) -> list[dict]:
                 ""
             )
             
+            # DOI o SECUENCIA como código de publicación
+            codigo_pub = (
+                row_json.get("DOI") or 
+                row_json.get("doi") or 
+                publication.publication_sequence or 
+                ""
+            )
+            
             # Mapear campos del JSON a la estructura de la matriz
             matrix_rows.append({
                 "CODIGO_IES": "1028",  # UCSG
                 "TIPO_PUBLICACION": publication.publication_type or "A",
                 "TIPO_ARTICULO": row_json.get("TIPO ARTICULO") or row_json.get("TIPO_ARTICULO") or "REVISTA",
-                "CODIGO_PUBLICA_CION": publication.publication_sequence or row_json.get("CODIGO PUBLICA CION") or "",
+                "CODIGO_PUBLICA_CION": codigo_pub,
                 "TITULO_PUBLICACION": publication.title or "",
                 "BASE_DATOS_INDEXADA": publication.source_base or row_json.get("BASE DATOS INDEXADA") or "",
                 "CODIGO_ISSN": row_json.get("CODIGO ISSN") or row_json.get("CODIGO_ISSN") or "",
