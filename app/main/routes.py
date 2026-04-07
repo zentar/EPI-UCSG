@@ -3583,11 +3583,24 @@ def matrices():
     selected_year = request.args.get("year", type=int)
     if selected_year is None and years_available:
         selected_year = years_available[0]
+
+    matrix_types = [
+        ("articulos", "Articulos"),
+        ("libros", "Libros"),
+        ("capitulos", "Capitulos de libros"),
+        ("eventos", "Eventos"),
+    ]
+    allowed_matrix_types = {code for code, _ in matrix_types}
+    selected_matrix_type = request.args.get("matrix_type", type=str, default="articulos").strip().lower()
+    if selected_matrix_type not in allowed_matrix_types:
+        selected_matrix_type = "articulos"
     
     return render_template(
         "main/matrices.html",
         years_available=years_available,
         selected_year=selected_year,
+        matrix_types=matrix_types,
+        selected_matrix_type=selected_matrix_type,
     )
 
 
@@ -3682,11 +3695,20 @@ def _build_articles_matrix(year: int) -> list[dict]:
 @main_bp.route("/evaluacion/matrices/export/articulos")
 @login_required
 def matrices_export_articulos():
-    """Exporta la matriz de artículos en CSV."""
+    """Exporta la matriz de artículos en CSV o XLSX."""
     year = request.args.get("year", type=int)
+    export_format = request.args.get("format", type=str, default="csv").lower()
+    matrix_type = request.args.get("matrix_type", type=str, default="articulos").strip().lower()
     if not year:
         flash("Debes seleccionar un año para exportar.", "error")
         return redirect(url_for("main.matrices"))
+
+    if matrix_type in {"libros", "capitulos", "eventos"}:
+        flash("Funcion en desarrollo para el tipo de matriz seleccionado.", "error")
+        return redirect(url_for("main.matrices", year=year, matrix_type=matrix_type))
+
+    if matrix_type != "articulos":
+        matrix_type = "articulos"
     
     matrix_rows = _build_articles_matrix(year)
     
