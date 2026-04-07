@@ -3564,3 +3564,160 @@ def config_bases():
             bases_list.append({"base_code": base_code, "label": "", "description": "", "id": None})
 
     return render_template("main/config_bases.html", bases_list=bases_list)
+
+
+@main_bp.route("/evaluacion/matrices")
+@login_required
+def matrices():
+    """Pantalla principal de matrices de publicaciones por docente/año."""
+    years_available = sorted([
+        int(row[0])
+        for row in db.session.query(Publication.publication_year)
+        .filter(Publication.publication_year.isnot(None))
+        .distinct()
+        .all()
+        if row[0]
+    ], reverse=True)
+    
+    selected_year = request.args.get("year", type=int)
+    if selected_year is None and years_available:
+        selected_year = years_available[0]
+    
+    return render_template(
+        "main/matrices.html",
+        years_available=years_available,
+        selected_year=selected_year,
+    )
+
+
+def _build_articles_matrix(year: int) -> list[dict]:
+    """
+    Construye la matriz de artículos por docente/año.
+    Campos: CODIGO_IES, TIPO_PUBLICACION, TIPO_ARTICULO, CODIGO_PUBLICA_CION,
+            TITULO_PUBLICACION, BASE_DATOS_INDEXADA, CODIGO_ISSN, NOMBRE_REVISTA,
+            FECHA_PUBLICACION, CAMPO_DETALLADO, ESTADO, LINK_PUBLICACION,
+            LINK_REVISTA, FILIACION, IDENTIFICACION_PARTICIPANTE, PARTICIPACION,
+            CUARTIL, LINEA_INVESTIGACION, INTERCULTURAL
+    """
+    publications = (
+        Publication.query.filter(
+            Publication.publication_year == year,
+            Publication.publication_type == "A"
+        )
+        .order_by(Publication.created_at.desc(), Publication.id.desc())
+        .all()
+    )
+    
+    publication_ids = [pub.id for pub in publications]
+    if not publication_ids:
+        return []
+    
+    authors = (
+        PublicationAuthor.query.filter(PublicationAuthor.publication_id.in_(publication_ids))
+        .order_by(PublicationAuthor.publication_id.asc(), PublicationAuthor.id.asc())
+        .all()
+    )
+    
+    authors_by_pub = defaultdict(list)
+    for author in authors:
+        authors_by_pub[author.publication_id].append(author)
+    
+    matrix_rows = []
+    
+    for publication in publications:
+        pub_authors = authors_by_pub.get(publication.id, [])
+        
+        # Un registro por cada autoría
+        for author in pub_authors:
+            row_json = author.source_row_json or {}
+            
+            # Descartar si FINALIZAR="DEVUELTOS"
+            finalizar = str(row_json.get("FINALIZAR", "")).strip().upper()
+            if finalizar == "DEVUELTOS":
+                continue
+            
+            # Extraer identificación del participante
+            num_id = (
+                row_json.get("NUMERO IDENTIFICACION") or
+                row_json.get("NUMERO_IDENTIFICACION") or
+                author.teacher_id or
+                ""
+            )
+            
+            # Mapear campos del JSON a la estructura de la matriz
+            matrix_rows.append({
+                "CODIGO_IES": "1028",  # UCSG
+                "TIPO_PUBLICACION": publication.publication_type or "A",
+                "TIPO_ARTICULO": row_json.get("TIPO ARTICULO") or row_json.get("TIPO_ARTICULO") or "REVISTA",
+                "CODIGO_PUBLICA_CION": publication.publication_sequence or row_json.get("CODIGO PUBLICA CION") or "",
+                "TITULO_PUBLICACION": publication.title or "",
+                "BASE_DATOS_INDEXADA": publication.source_base or row_json.get("BASE DATOS INDEXADA") or "",
+                "CODIGO_ISSN": row_json.get("CODIGO ISSN") or row_json.get("CODIGO_ISSN") or "",
+                "NOMBRE_REVISTA": publication.journal_name or row_json.get("NOMBRE REVISTA") or "",
+                "FECHA_PUBLICACION": row_json.get("FECHA PUBLICACION") or row_json.get("FECHA_PUBLICACION") or "",
+                "CAMPO_DETALLADO": row_json.get("CAMPO DETALLADO") or row_json.get("CAMPO_DETALLADO") or "",
+                "ESTADO": row_json.get("ESTADO") or "ACTIVO",
+                "LINK_PUBLICACION": row_json.get("LINK PUBLICACION") or row_json.get("LINK_PUBLICACION") or "",
+                "LINK_REVISTA": row_json.get("LINK REVISTA") or row_json.get("LINK_REVISTA") or "",
+                "FILIACION": row_json.get("FILIACION") or row_json.get("FILIACION") or "",
+                "IDENTIFICACION_PARTICIPANTE": num_id,
+                "PARTICIPACION": row_json.get("PARTICIPACION") or row_json.get("PARTICIPACION") or "1",
+                "CUARTIL": publication.quartile or row_json.get("INDICE Q") or row_json.get("CUARTIL") or "",
+                "LINEA_INVESTIGACION": row_json.get("LINEA INVESTIGACION") or row_json.get("LINEA_INVESTIGACION") or "",
+                "INTERCULTURAL": row_json.get("INTERCULTURAL") or "",
+            })
+    
+    return matrix_rows
+
+
+@main_bp.route("/evaluacion/matrices/export/articulos")
+@login_required
+def matrices_export_articulos():
+    """Exporta la matriz de artículos en CSV."""
+    year = request.args.get("year", type=int)
+    if not year:
+        flash("Debes seleccionar un año para exportar.", "error")
+        return redirect(url_for("main.matrices"))
+    
+    matrix_rows = _build_articles_matrix(year)
+    
+    if not matrix_rows:
+        flash(f"No hay artículos disponibles para el año {year}.", "error")
+        return redirect(url_for("main.matrices", year=year))
+    
+    # Orden de columnas según el esquema
+    columns = [
+        "CODIGO_IES",
+        "TIPO_PUBLICACION",
+        "TIPO_ARTICULO",
+        "CODIGO_PUBLICA_CION",
+        "TITULO_PUBLICACION",
+        "BASE_DATOS_INDEXADA",
+        "CODIGO_ISSN",
+        "NOMBRE_REVISTA",
+        "FECHA_PUBLICACION",
+        "CAMPO_DETALLADO",
+        "ESTADO",
+        "LINK_PUBLICACION",
+        "LINK_REVISTA",
+        "FILIACION",
+        "IDENTIFICACION_PARTICIPANTE",
+        "PARTICIPACION",
+        "CUARTIL",
+        "LINEA_INVESTIGACION",
+        "INTERCULTURAL",
+    ]
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(columns)
+    
+    for row in matrix_rows:
+        writer.writerow([row.get(col, "") for col in columns])
+    
+    file_name = f"matriz_articulos_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        "\ufeff" + output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={file_name}"},
+    )
