@@ -3692,6 +3692,268 @@ def _build_articles_matrix(year: int) -> list[dict]:
     return matrix_rows
 
 
+def _build_books_matrix(year: int) -> list[dict]:
+    """
+    Construye la matriz de libros por docente/año.
+    Campos: CODIGO_IES, TIPO_PUBLICACION, CODIGO_PUBLICACION, TITULO_LIBRO,
+            CODIGO_ISBN, FECHA_PUBLICACION, CAMPO_DETALLADO, REVISADO_PARES,
+            FILIACION, IDENTIFICACION_PARTICIPANTE, PARTICIPACION,
+            LINEA_INVESTIGACION
+    """
+    publications = (
+        Publication.query.filter(
+            Publication.publication_year == year,
+            Publication.publication_type == "L",
+        )
+        .order_by(Publication.created_at.desc(), Publication.id.desc())
+        .all()
+    )
+
+    publication_ids = [pub.id for pub in publications]
+    if not publication_ids:
+        return []
+
+    authors = (
+        PublicationAuthor.query.filter(PublicationAuthor.publication_id.in_(publication_ids))
+        .order_by(PublicationAuthor.publication_id.asc(), PublicationAuthor.id.asc())
+        .all()
+    )
+
+    authors_by_pub = defaultdict(list)
+    for author in authors:
+        authors_by_pub[author.publication_id].append(author)
+
+    matrix_rows = []
+
+    for publication in publications:
+        pub_authors = authors_by_pub.get(publication.id, [])
+        for author in pub_authors:
+            row_json = author.source_row_json or {}
+
+            finalizar = str(row_json.get("FINALIZAR", "")).strip().upper()
+            if finalizar == "DEVUELTOS":
+                continue
+
+            num_id = (
+                row_json.get("NUMERO IDENTIFICACION")
+                or row_json.get("NUMERO_IDENTIFICACION")
+                or row_json.get("COD EMPLEADO")
+                or row_json.get("COD_EMPLEADO")
+                or author.teacher_id
+                or ""
+            )
+
+            codigo_publicacion = (
+                publication.publication_sequence
+                or row_json.get("SECUENCIA")
+                or row_json.get("CODIGO PUBLICACION")
+                or row_json.get("CODIGO_PUBLICACION")
+                or ""
+            )
+
+            matrix_rows.append(
+                {
+                    "CODIGO_IES": "1028",
+                    "TIPO_PUBLICACION": "LIBRO",
+                    "CODIGO_PUBLICACION": codigo_publicacion,
+                    "TITULO_LIBRO": publication.title or row_json.get("DESCRIPCION") or "",
+                    "CODIGO_ISBN": row_json.get("ISBN") or row_json.get("CODIGO ISBN") or "",
+                    "FECHA_PUBLICACION": row_json.get("FEC_PUBLICACION") or row_json.get("FECHA PUBLICACION") or "",
+                    "CAMPO_DETALLADO": (
+                        row_json.get("COD_DETALLE")
+                        or row_json.get("CAMPO DETALLADO")
+                        or row_json.get("CAMPO_DETALLADO")
+                        or ""
+                    ),
+                    "REVISADO_PARES": row_json.get("REVISADO_PARES") or row_json.get("EST_LIBRO_REV") or "",
+                    "FILIACION": row_json.get("FILIACION") or "",
+                    "IDENTIFICACION_PARTICIPANTE": num_id,
+                    "PARTICIPACION": row_json.get("PARTICIPACION") or "1",
+                    "LINEA_INVESTIGACION": row_json.get("LINEA_INVESTIGACION") or "",
+                }
+            )
+
+    return matrix_rows
+
+
+def _build_chapters_matrix(year: int) -> list[dict]:
+    """
+    Construye la matriz de capitulos de libro por docente/año.
+    Campos: CODIGO_IES, TIPO_PUBLICACION, CODIGO_PUBLICACION, TITULO_CAPITULO,
+            TITULO_LIBRO, CODIGO_ISBN, EDITOR_COMPILADOR, PAGINAS,
+            FECHA_PUBLICACION, CAMPO_DETALLADO, FILIACION,
+            IDENTIFICACION_PARTICIPANTE, PARTICIPACION,
+            TOTAL_CAPITULO_LIBRO, LINEA_INVESTIGACION
+    """
+    publications = (
+        Publication.query.filter(
+            Publication.publication_year == year,
+            Publication.publication_type == "C",
+        )
+        .order_by(Publication.created_at.desc(), Publication.id.desc())
+        .all()
+    )
+
+    publication_ids = [pub.id for pub in publications]
+    if not publication_ids:
+        return []
+
+    authors = (
+        PublicationAuthor.query.filter(PublicationAuthor.publication_id.in_(publication_ids))
+        .order_by(PublicationAuthor.publication_id.asc(), PublicationAuthor.id.asc())
+        .all()
+    )
+
+    authors_by_pub = defaultdict(list)
+    for author in authors:
+        authors_by_pub[author.publication_id].append(author)
+
+    matrix_rows = []
+
+    for publication in publications:
+        pub_authors = authors_by_pub.get(publication.id, [])
+        for author in pub_authors:
+            row_json = author.source_row_json or {}
+
+            finalizar = str(row_json.get("FINALIZAR", "")).strip().upper()
+            if finalizar == "DEVUELTOS":
+                continue
+
+            num_id = (
+                row_json.get("NUMERO IDENTIFICACION")
+                or row_json.get("NUMERO_IDENTIFICACION")
+                or row_json.get("COD EMPLEADO")
+                or row_json.get("COD_EMPLEADO")
+                or author.teacher_id
+                or ""
+            )
+
+            codigo_publicacion = (
+                publication.publication_sequence
+                or row_json.get("SECUENCIA")
+                or row_json.get("CODIGO PUBLICACION")
+                or row_json.get("CODIGO_PUBLICACION")
+                or ""
+            )
+
+            matrix_rows.append(
+                {
+                    "CODIGO_IES": "1028",
+                    "TIPO_PUBLICACION": "CAPITULO LIBRO",
+                    "CODIGO_PUBLICACION": codigo_publicacion,
+                    "TITULO_CAPITULO": row_json.get("NOMBRE_CAP") or row_json.get("TITULO CAPITULO") or "",
+                    "TITULO_LIBRO": publication.title or row_json.get("DESCRIPCION") or "",
+                    "CODIGO_ISBN": row_json.get("ISBN") or row_json.get("CODIGO ISBN") or "",
+                    "EDITOR_COMPILADOR": row_json.get("EDITOR") or row_json.get("EDITOR COMPILADOR") or "",
+                    "PAGINAS": row_json.get("PAGINAS") or row_json.get("PAGINA") or "",
+                    "FECHA_PUBLICACION": row_json.get("FEC_PUBLICACION") or row_json.get("FECHA PUBLICACION") or "",
+                    "CAMPO_DETALLADO": (
+                        row_json.get("COD_DETALLE")
+                        or row_json.get("CAMPO DETALLADO")
+                        or row_json.get("CAMPO_DETALLADO")
+                        or ""
+                    ),
+                    "FILIACION": row_json.get("FILIACION") or "",
+                    "IDENTIFICACION_PARTICIPANTE": num_id,
+                    "PARTICIPACION": row_json.get("PARTICIPACION") or "1",
+                    "TOTAL_CAPITULO_LIBRO": row_json.get("TOTAL_CAPITULOS") or "",
+                    "LINEA_INVESTIGACION": row_json.get("LINEA_INVESTIGACION") or "",
+                }
+            )
+
+    return matrix_rows
+
+
+def _build_events_matrix(year: int) -> list[dict]:
+    """
+    Construye la matriz de memoria de evento academico por docente/año.
+    Campos: CODIGO_IES, TIPO_PUBLICACION, TIPO_ARTICULO, CODIGO_PUBLICA_CION,
+            NOMBRE_PONENCIA, NOMBRE_EVENTO, EDICION_EVENTO,
+            ORGANIZADOR_EVENTO, COMITE_ORGANIZADOR, PAIS, CIUDAD,
+            FECHA_PUBLICACION, CAMPO_DETALLADO,
+            IDENTIFICACION_PARTICIPANTE, PARTICIPACION,
+            LINEA_INVESTIGACION
+    """
+    publications = (
+        Publication.query.filter(
+            Publication.publication_year == year,
+            Publication.publication_type == "E",
+        )
+        .order_by(Publication.created_at.desc(), Publication.id.desc())
+        .all()
+    )
+
+    publication_ids = [pub.id for pub in publications]
+    if not publication_ids:
+        return []
+
+    authors = (
+        PublicationAuthor.query.filter(PublicationAuthor.publication_id.in_(publication_ids))
+        .order_by(PublicationAuthor.publication_id.asc(), PublicationAuthor.id.asc())
+        .all()
+    )
+
+    authors_by_pub = defaultdict(list)
+    for author in authors:
+        authors_by_pub[author.publication_id].append(author)
+
+    matrix_rows = []
+
+    for publication in publications:
+        pub_authors = authors_by_pub.get(publication.id, [])
+        for author in pub_authors:
+            row_json = author.source_row_json or {}
+
+            finalizar = str(row_json.get("FINALIZAR", "")).strip().upper()
+            if finalizar == "DEVUELTOS":
+                continue
+
+            num_id = (
+                row_json.get("NUMERO IDENTIFICACION")
+                or row_json.get("NUMERO_IDENTIFICACION")
+                or row_json.get("COD EMPLEADO")
+                or row_json.get("COD_EMPLEADO")
+                or author.teacher_id
+                or ""
+            )
+
+            codigo_publicacion = (
+                publication.publication_sequence
+                or row_json.get("SECUENCIA")
+                or row_json.get("CODIGO PUBLICACION")
+                or row_json.get("CODIGO_PUBLICACION")
+                or ""
+            )
+
+            matrix_rows.append(
+                {
+                    "CODIGO_IES": "1028",
+                    "TIPO_PUBLICACION": "ARTICULO",
+                    "TIPO_ARTICULO": "MEMORIA",
+                    "CODIGO_PUBLICA_CION": codigo_publicacion,
+                    "NOMBRE_PONENCIA": publication.title or row_json.get("DESCRIPCION") or "",
+                    "NOMBRE_EVENTO": row_json.get("NOMBRE_EVENTO") or row_json.get("NOMBRE EVENTO") or "",
+                    "EDICION_EVENTO": row_json.get("EDICION_EVENTO") or row_json.get("EDICION EVENTO") or "",
+                    "ORGANIZADOR_EVENTO": row_json.get("ORGANIZADOR_EVENTO") or row_json.get("ORGANIZADOR EVENTO") or "",
+                    "COMITE_ORGANIZADOR": row_json.get("COMITE_ORGANIZADOR") or row_json.get("COMITE ORGANIZADOR") or "",
+                    "PAIS": row_json.get("PAIS") or "",
+                    "CIUDAD": row_json.get("CIUDAD") or "",
+                    "FECHA_PUBLICACION": row_json.get("FEC_PUBLICACION") or row_json.get("FECHA PUBLICACION") or "",
+                    "CAMPO_DETALLADO": (
+                        row_json.get("COD_DETALLE")
+                        or row_json.get("CAMPO DETALLADO")
+                        or row_json.get("CAMPO_DETALLADO")
+                        or ""
+                    ),
+                    "IDENTIFICACION_PARTICIPANTE": num_id,
+                    "PARTICIPACION": row_json.get("PARTICIPACION") or "1",
+                    "LINEA_INVESTIGACION": row_json.get("LINEA_INVESTIGACION") or "",
+                }
+            )
+
+    return matrix_rows
+
+
 @main_bp.route("/evaluacion/matrices/export/articulos")
 @login_required
 def matrices_export_articulos():
@@ -3703,49 +3965,109 @@ def matrices_export_articulos():
         flash("Debes seleccionar un año para exportar.", "error")
         return redirect(url_for("main.matrices"))
 
-    if matrix_type in {"libros", "capitulos", "eventos"}:
-        flash("Funcion en desarrollo para el tipo de matriz seleccionado.", "error")
-        return redirect(url_for("main.matrices", year=year, matrix_type=matrix_type))
-
-    if matrix_type != "articulos":
+    if matrix_type not in {"articulos", "libros", "capitulos", "eventos"}:
         matrix_type = "articulos"
-    
-    matrix_rows = _build_articles_matrix(year)
-    
+
+    if matrix_type == "libros":
+        matrix_rows = _build_books_matrix(year)
+        columns = [
+            "CODIGO_IES",
+            "TIPO_PUBLICACION",
+            "CODIGO_PUBLICACION",
+            "TITULO_LIBRO",
+            "CODIGO_ISBN",
+            "FECHA_PUBLICACION",
+            "CAMPO_DETALLADO",
+            "REVISADO_PARES",
+            "FILIACION",
+            "IDENTIFICACION_PARTICIPANTE",
+            "PARTICIPACION",
+            "LINEA_INVESTIGACION",
+        ]
+        file_name = f"matriz_libros_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sheet_name = "Libros"
+        empty_label = "libros"
+    elif matrix_type == "capitulos":
+        matrix_rows = _build_chapters_matrix(year)
+        columns = [
+            "CODIGO_IES",
+            "TIPO_PUBLICACION",
+            "CODIGO_PUBLICACION",
+            "TITULO_CAPITULO",
+            "TITULO_LIBRO",
+            "CODIGO_ISBN",
+            "EDITOR_COMPILADOR",
+            "PAGINAS",
+            "FECHA_PUBLICACION",
+            "CAMPO_DETALLADO",
+            "FILIACION",
+            "IDENTIFICACION_PARTICIPANTE",
+            "PARTICIPACION",
+            "TOTAL_CAPITULO_LIBRO",
+            "LINEA_INVESTIGACION",
+        ]
+        file_name = f"matriz_capitulos_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sheet_name = "Capitulos"
+        empty_label = "capitulos"
+    elif matrix_type == "eventos":
+        matrix_rows = _build_events_matrix(year)
+        columns = [
+            "CODIGO_IES",
+            "TIPO_PUBLICACION",
+            "TIPO_ARTICULO",
+            "CODIGO_PUBLICA_CION",
+            "NOMBRE_PONENCIA",
+            "NOMBRE_EVENTO",
+            "EDICION_EVENTO",
+            "ORGANIZADOR_EVENTO",
+            "COMITE_ORGANIZADOR",
+            "PAIS",
+            "CIUDAD",
+            "FECHA_PUBLICACION",
+            "CAMPO_DETALLADO",
+            "IDENTIFICACION_PARTICIPANTE",
+            "PARTICIPACION",
+            "LINEA_INVESTIGACION",
+        ]
+        file_name = f"matriz_eventos_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sheet_name = "Eventos"
+        empty_label = "eventos"
+    else:
+        matrix_rows = _build_articles_matrix(year)
+        columns = [
+            "CODIGO_IES",
+            "TIPO_PUBLICACION",
+            "TIPO_ARTICULO",
+            "CODIGO_PUBLICA_CION",
+            "TITULO_PUBLICACION",
+            "BASE_DATOS_INDEXADA",
+            "CODIGO_ISSN",
+            "NOMBRE_REVISTA",
+            "FECHA_PUBLICACION",
+            "CAMPO_DETALLADO",
+            "ESTADO",
+            "LINK_PUBLICACION",
+            "LINK_REVISTA",
+            "FILIACION",
+            "IDENTIFICACION_PARTICIPANTE",
+            "PARTICIPACION",
+            "CUARTIL",
+            "LINEA_INVESTIGACION",
+            "INTERCULTURAL",
+        ]
+        file_name = f"matriz_articulos_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sheet_name = "Articulos"
+        empty_label = "articulos"
+
     if not matrix_rows:
-        flash(f"No hay artículos disponibles para el año {year}.", "error")
-        return redirect(url_for("main.matrices", year=year))
-    
-    # Orden de columnas según el esquema
-    columns = [
-        "CODIGO_IES",
-        "TIPO_PUBLICACION",
-        "TIPO_ARTICULO",
-        "CODIGO_PUBLICA_CION",
-        "TITULO_PUBLICACION",
-        "BASE_DATOS_INDEXADA",
-        "CODIGO_ISSN",
-        "NOMBRE_REVISTA",
-        "FECHA_PUBLICACION",
-        "CAMPO_DETALLADO",
-        "ESTADO",
-        "LINK_PUBLICACION",
-        "LINK_REVISTA",
-        "FILIACION",
-        "IDENTIFICACION_PARTICIPANTE",
-        "PARTICIPACION",
-        "CUARTIL",
-        "LINEA_INVESTIGACION",
-        "INTERCULTURAL",
-    ]
-    
-    file_name = f"matriz_articulos_{year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        flash(f"No hay {empty_label} disponibles para el año {year}.", "error")
+        return redirect(url_for("main.matrices", year=year, matrix_type=matrix_type))
     
     if export_format == "xlsx":
         df = pd.DataFrame(matrix_rows, columns=columns)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Artículos")
+            df.to_excel(writer, index=False, sheet_name=sheet_name)
         output.seek(0)
         return Response(
             output.getvalue(),
