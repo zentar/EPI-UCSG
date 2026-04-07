@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+    }
+
+    .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.42);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        padding: 16px;
+    }
+
+    .modal-card {
+        width: min(520px, 100%);
+        background: #fff;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        padding: 18px;
+    }
+
+    .form-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+        margin-top: 12px;
+    }
+
+    .form-label {
+        display: grid;
+        gap: 6px;
+        font-size: 0.84rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .form-input {
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: inherit;
+        background: #fff;
+        color: var(--ink);
+        width: 100%;
+    }
+
+    .maintenance-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 760px;
+        table-layout: fixed;
+    }
+
+    .maintenance-table th,
+    .maintenance-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .maintenance-table th {
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        background: #fafafa;
+        white-space: nowrap;
+    }
+
+    .maintenance-table td {
+        font-size: 0.92rem;
+        vertical-align: middle;
+    }
+
+    .col-updated {
+        padding-right: 18px !important;
+        white-space: nowrap;
+        text-align: right;
+    }
+
+    .maintenance-table tbody tr:hover {
+        background: rgba(169, 0, 70, 0.05);
+    }
+
+    .editing-row {
+        background: rgba(169, 0, 70, 0.11) !important;
+    }
+
+    .actions-cell {
+        text-align: right;
+    }
+
+    .actions-wrap {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: nowrap;
+    }
+
+    .btn-muted {
+        background: #303132;
+    }
+
+    .btn-danger {
+        background: #7a0033;
+    }
+
+    @media (max-width: 860px) {
+        .actions-wrap {
+            flex-wrap: wrap;
+        }
+    }
+</style>
+
+<section class="card">
+    <h2 style="margin:0; border:none; padding:0;">Mantenimiento anual PA/PIA</h2>
+    <p style="margin-top:8px; color:var(--muted);">Registra los valores por año. En el cálculo iP se suman automáticamente los 3 años del período seleccionado.</p>
+
+    <div style="display:flex; justify-content:flex-end; margin-top:14px;">
+        <button type="button" class="button" id="btn-add-pa-pia">Agregar</button>
+    </div>
+</section>
+
+<section class="card" style="margin-top:18px;">
+    <h2 style="margin-top:0;">Historial anual PA/PIA</h2>
+    <div class="table-wrap">
+        <table class="maintenance-table">
+            <colgroup>
+                <col style="width: 10%;">
+                <col style="width: 12%;">
+                <col style="width: 12%;">
+                <col style="width: 42%;">
+                <col style="width: 24%;">
+            </colgroup>
+            <thead>
+                <tr>
+                    <th style="text-align:left;">Año</th>
+                    <th style="text-align:right;">PA</th>
+                    <th style="text-align:right;">PIA</th>
+                    <th class="col-updated">Última actualización</th>
+                    <th class="actions-cell">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if yearly_data %}
+                    {% for row in yearly_data %}
+                    <tr data-row-year="{{ row.year }}">
+                        <td>{{ row.year }}</td>
+                        <td style="text-align:right; font-variant-numeric: tabular-nums;">{{ row.pa }}</td>
+                        <td style="text-align:right; font-variant-numeric: tabular-nums;">{{ row.pia }}</td>
+                        <td class="col-updated">{{ row.updated_at.strftime('%Y-%m-%d %H:%M') if row.updated_at else '-' }}</td>
+                        <td class="actions-cell">
+                            <div class="actions-wrap">
+                                <button
+                                    type="button"
+                                    class="button btn-muted"
+                                    data-edit-year="{{ row.year }}"
+                                    data-edit-pa="{{ row.pa }}"
+                                    data-edit-pia="{{ row.pia }}"
+                                >Editar</button>
+                                <form method="get" style="display:inline;">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="set_year" value="{{ row.year }}">
+                                    <input type="hidden" name="year" value="{{ selected_year }}">
+                                    <button type="submit" class="button btn-danger" onclick="return confirm('¿Eliminar el registro del año {{ row.year }}?');">Eliminar</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="5" style="padding:8px;">No hay valores registrados.</td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<div class="modal-backdrop" id="pa-pia-modal" data-selected-year="{{ selected_year }}">
+    <div class="modal-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+            <h3 id="modal-title" style="margin:0;">Nuevo registro anual</h3>
+            <button type="button" id="modal-close" class="button" style="background:#303132;">Cerrar</button>
+        </div>
+
+        <form method="get" class="form-grid">
+            <input type="hidden" name="action" value="save">
+            <input type="hidden" name="year" id="modal-year-ref" value="{{ selected_year }}">
+
+            <label class="form-label">
+                Año
+                <input class="form-input" type="number" min="2000" max="2100" name="set_year" id="modal-set-year" required>
+            </label>
+
+            <label class="form-label">
+                PA (Producción académica)
+                <input class="form-input" type="number" min="0" step="0.01" name="pa" id="modal-pa" required>
+            </label>
+
+            <label class="form-label">
+                PIA (Producción intelectual aplicada)
+                <input class="form-input" type="number" min="0" step="0.01" name="pia" id="modal-pia" required>
+            </label>
+
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:6px;">
+                <button type="button" id="modal-cancel" class="button" style="background:#303132;">Cancelar</button>
+                <button type="submit" class="button">Guardar</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    (() => {
+        const modal = document.getElementById('pa-pia-modal');
+        const modalTitle = document.getElementById('modal-title');
+        const btnAdd = document.getElementById('btn-add-pa-pia');
+        const btnClose = document.getElementById('modal-close');
+        const btnCancel = document.getElementById('modal-cancel');
+        const inputYear = document.getElementById('modal-set-year');
+        const inputPa = document.getElementById('modal-pa');
+        const inputPia = document.getElementById('modal-pia');
+        const inputYearRef = document.getElementById('modal-year-ref');
+        const selectedYear = Number(modal.getAttribute('data-selected-year') || new Date().getFullYear());
+        let editingRow = null;
+
+        const openModal = (mode, year, pa, pia, rowElement = null) => {
+            if (mode === 'edit') {
+                modalTitle.textContent = 'Editar registro anual';
+            } else {
+                modalTitle.textContent = 'Nuevo registro anual';
+            }
+
+            if (editingRow) {
+                editingRow.classList.remove('editing-row');
+                editingRow = null;
+            }
+            if (rowElement) {
+                editingRow = rowElement;
+                editingRow.classList.add('editing-row');
+            }
+
+            inputYear.value = year;
+            inputPa.value = pa;
+            inputPia.value = pia;
+            inputYearRef.value = year;
+            modal.style.display = 'flex';
+            inputYear.focus();
+        };
+
+        const closeModal = () => {
+            modal.style.display = 'none';
+            if (editingRow) {
+                editingRow.classList.remove('editing-row');
+                editingRow = null;
+            }
+        };
+
+        if (btnAdd) {
+            btnAdd.addEventListener('click', () => openModal('add', selectedYear || new Date().getFullYear(), 0, 0));
+        }
+
+        document.querySelectorAll('[data-edit-year]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const year = Number(btn.getAttribute('data-edit-year') || selectedYear || new Date().getFullYear());
+                const pa = Number(btn.getAttribute('data-edit-pa') || 0);
+                const pia = Number(btn.getAttribute('data-edit-pia') || 0);
+                openModal('edit', year, pa, pia, btn.closest('tr'));
+            });
+        });
+
+        [btnClose, btnCancel].forEach((btn) => {
+            if (btn) btn.addEventListener('click', closeModal);
+        });
+
+        if (modal) {
+            modal.addEventListener('click', (event) => {
+                if (event.target === modal) closeModal();
+            });
+        }
+    })();
+</script>
+{% endblock %}

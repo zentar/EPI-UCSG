@@ -69,6 +69,21 @@
         border-radius: 8px;
         padding: 10px;
         background: #fff;
+        position: relative;
+    }
+
+    .chart-tooltip {
+        position: absolute;
+        background: rgba(26, 28, 30, 0.94);
+        color: #fff;
+        font-size: 0.78rem;
+        padding: 6px 8px;
+        border-radius: 6px;
+        pointer-events: none;
+        transform: translate(-50%, -130%);
+        white-space: nowrap;
+        display: none;
+        z-index: 2;
     }
 
     .link-inline {
@@ -83,7 +98,7 @@
 </style>
 
 <section class="card">
-    <h2 style="margin:0; border:none; padding:0;">Histórico resultados PA (Producción Académica)</h2>
+    <h2 style="margin:0; border:none; padding:0;">Histórico resultados iP (Índice de Producción Académica per cápita)</h2>
 
     <form id="pac-history-filter-form" method="get" style="margin-top:14px; display:grid; gap:12px;">
         <div class="filter-grid">
@@ -145,21 +160,22 @@
         </div>
         <div class="stat-card">
             <strong>{% if average_pac is not none %}{{ average_pac }}{% else %}-{% endif %}</strong>
-            <span>PA promedio</span>
+            <span>iP promedio</span>
         </div>
         <div class="stat-card">
             <strong>{% if best_row %}{{ best_row.pac }}{% else %}-{% endif %}</strong>
-            <span>Mejor PA</span>
+            <span>Mejor iP</span>
         </div>
         <div class="stat-card">
             <strong>{% if worst_row %}{{ worst_row.pac }}{% else %}-{% endif %}</strong>
-            <span>Menor PA</span>
+            <span>Menor iP</span>
         </div>
     </div>
 
     {% if history_rows %}
     <div class="chart-wrap">
         <canvas id="pac-history-chart" height="110"></canvas>
+        <div id="pac-history-tooltip" class="chart-tooltip"></div>
     </div>
         <script id="pac-history-labels" type="application/json">{{ chart_labels | tojson }}</script>
         <script id="pac-history-values" type="application/json">{{ chart_values | tojson }}</script>
@@ -180,9 +196,9 @@
                 <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">L</th>
                 <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">CL</th>
                 <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PA</th>
-                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PI</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PIA</th>
                 <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">TOTAL</th>
-                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">PA final</th>
+                <th style="text-align:right; border-bottom:1px solid var(--line); padding:8px;">iP</th>
                 <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Detalle</th>
             </tr>
         </thead>
@@ -203,7 +219,7 @@
                     <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right;">{{ row.numerador }}</td>
                     <td style="padding:8px; border-bottom:1px solid var(--line); text-align:right; font-weight:700;">{% if row.pac is not none %}{{ row.pac }}{% else %}-{% endif %}</td>
                     <td style="padding:8px; border-bottom:1px solid var(--line);">
-                        <a class="link-inline" href="{{ url_for('main.evaluacion_pac', year=row.evaluation_year, faculty=selected_faculty, career=selected_career, pub_year=row.publication_year_filter, exclude_devueltos=1 if exclude_devueltos else 0) }}">Ver PA</a>
+                        <a class="link-inline" href="{{ url_for('main.evaluacion_ip', year=row.evaluation_year, faculty=selected_faculty, career=selected_career, pub_year=row.publication_year_filter, exclude_devueltos=1 if exclude_devueltos else 0) }}">Ver iP</a>
                     </td>
                 </tr>
                 {% endfor %}
@@ -241,7 +257,9 @@
         const labels = labelsNode ? JSON.parse(labelsNode.textContent || '[]') : [];
         const values = valuesNode ? JSON.parse(valuesNode.textContent || '[]') : [];
         const canvas = document.getElementById('pac-history-chart');
-        if (!canvas || !labels.length) return;
+        const tooltip = document.getElementById('pac-history-tooltip');
+        const chartWrap = canvas ? canvas.closest('.chart-wrap') : null;
+        if (!canvas || !labels.length || !tooltip || !chartWrap) return;
 
         const ctx = canvas.getContext('2d');
         const width = canvas.width;
@@ -251,56 +269,91 @@
         const innerH = height - padding.top - padding.bottom;
         const maxValue = Math.max(...values, 0.1);
 
-        ctx.clearRect(0, 0, width, height);
-        ctx.strokeStyle = '#d9d9d9';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(padding.left, padding.top);
-        ctx.lineTo(padding.left, height - padding.bottom);
-        ctx.lineTo(width - padding.right, height - padding.bottom);
-        ctx.stroke();
-
-        if (values.length === 1) {
-            const y = height - padding.bottom - (values[0] / maxValue) * innerH;
-            const x = padding.left + innerW / 2;
-            ctx.fillStyle = '#A90046';
-            ctx.beginPath();
-            ctx.arc(x, y, 4, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#303132';
-            ctx.font = '11px sans-serif';
-            ctx.fillText(labels[0], x - 10, height - 8);
-            ctx.fillText(String(values[0].toFixed ? values[0].toFixed(3) : values[0]), x + 6, y - 6);
-            return;
-        }
-
         const points = values.map((value, idx) => {
-            const x = padding.left + (idx / (values.length - 1)) * innerW;
+            const ratio = values.length === 1 ? 0.5 : (idx / (values.length - 1));
+            const x = padding.left + ratio * innerW;
             const y = height - padding.bottom - (value / maxValue) * innerH;
             return { x, y, value, label: labels[idx] };
         });
 
-        ctx.strokeStyle = '#A90046';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        points.forEach((p, idx) => {
-            if (idx === 0) ctx.moveTo(p.x, p.y);
-            else ctx.lineTo(p.x, p.y);
-        });
-        ctx.stroke();
-
-        ctx.fillStyle = '#A90046';
-        points.forEach((p) => {
+        const drawChart = (hoverIndex = -1) => {
+            ctx.clearRect(0, 0, width, height);
+            ctx.strokeStyle = '#d9d9d9';
+            ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.moveTo(padding.left, padding.top);
+            ctx.lineTo(padding.left, height - padding.bottom);
+            ctx.lineTo(width - padding.right, height - padding.bottom);
+            ctx.stroke();
+
+            if (points.length > 1) {
+                ctx.strokeStyle = '#A90046';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                points.forEach((p, idx) => {
+                    if (idx === 0) ctx.moveTo(p.x, p.y);
+                    else ctx.lineTo(p.x, p.y);
+                });
+                ctx.stroke();
+            }
+
+            points.forEach((p, idx) => {
+                const isHovered = idx === hoverIndex;
+                ctx.fillStyle = isHovered ? '#7a0033' : '#A90046';
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, isHovered ? 5 : 3, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            ctx.fillStyle = '#303132';
+            ctx.font = '11px sans-serif';
+            points.forEach((p) => {
+                ctx.fillText(p.label, p.x - 10, height - 8);
+            });
+        };
+
+        drawChart();
+
+        const hideTooltip = () => {
+            tooltip.style.display = 'none';
+            canvas.style.cursor = 'default';
+            drawChart(-1);
+        };
+
+        canvas.addEventListener('mousemove', (event) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const mouseX = (event.clientX - rect.left) * scaleX;
+            const mouseY = (event.clientY - rect.top) * scaleY;
+
+            let hoveredIndex = -1;
+            let minDistance = Infinity;
+            points.forEach((p, idx) => {
+                const distance = Math.hypot(mouseX - p.x, mouseY - p.y);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    hoveredIndex = idx;
+                }
+            });
+
+            if (hoveredIndex === -1 || minDistance > 12) {
+                hideTooltip();
+                return;
+            }
+
+            const p = points[hoveredIndex];
+            drawChart(hoveredIndex);
+            canvas.style.cursor = 'pointer';
+            tooltip.textContent = `${p.label}: iP ${Number(p.value).toFixed(4)}`;
+            const tooltipLeft = (p.x / scaleX);
+            const tooltipTop = (p.y / scaleY);
+            tooltip.style.left = `${tooltipLeft}px`;
+            tooltip.style.top = `${tooltipTop}px`;
+            tooltip.style.display = 'block';
         });
 
-        ctx.fillStyle = '#303132';
-        ctx.font = '11px sans-serif';
-        points.forEach((p) => {
-            ctx.fillText(p.label, p.x - 10, height - 8);
-        });
+        canvas.addEventListener('mouseleave', hideTooltip);
     })();
 </script>
 {% endblock %}

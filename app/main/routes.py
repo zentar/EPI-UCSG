@@ -426,7 +426,7 @@ def _chapter_weight(publication_authors: list[PublicationAuthor]) -> float:
     return 0.0
 
 
-def _resolve_pac_source_years(evaluation_year: int, publication_year_filter: str) -> tuple[list[int], str]:
+def _resolve_ip_source_years(evaluation_year: int, publication_year_filter: str) -> tuple[list[int], str]:
     default_source_years = [evaluation_year - 1, evaluation_year - 2, evaluation_year - 3]
     all_publication_years = [
         row[0]
@@ -453,16 +453,34 @@ def _resolve_pac_source_years(evaluation_year: int, publication_year_filter: str
     return source_years, normalized_filter
 
 
-def _compute_pac_summary(
+def _annual_pa_pia_totals(source_years: list[int]) -> tuple[float, float]:
+    if not source_years:
+        return 0.0, 0.0
+
+    rows = (
+        PacArtisticSetting.query.filter(
+            PacArtisticSetting.evaluation_year.in_(source_years),
+            PacArtisticSetting.faculty_scope == "ALL",
+            PacArtisticSetting.career_scope == "ALL",
+        )
+        .order_by(PacArtisticSetting.evaluation_year.desc())
+        .all()
+    )
+
+    pa_total = sum(float(row.artistic_value or 0.0) for row in rows)
+    pia_total = sum(float(row.intellectual_value or 0.0) for row in rows)
+    return round(pa_total, 4), round(pia_total, 4)
+
+
+def _compute_ip_summary(
     evaluation_year: int,
     selected_faculty: str,
     selected_career: str,
     publication_year_filter: str,
     exclude_devueltos: bool,
-    p_artistica: float,
-    p_intelectual: float,
 ) -> tuple[dict, list[int], str, dict[str, int]]:
-    source_years, normalized_pub_year_filter = _resolve_pac_source_years(evaluation_year, publication_year_filter)
+    source_years, normalized_pub_year_filter = _resolve_ip_source_years(evaluation_year, publication_year_filter)
+    p_artistica, p_intelectual = _annual_pa_pia_totals(source_years)
 
     teachers_query = Teacher.query.filter(Teacher.year == evaluation_year)
     if selected_faculty != "ALL":
@@ -581,7 +599,7 @@ def _compute_pac_summary(
             capitulos_ponderados += chapter_weight
 
     numerador = articulos_ponderados + libros_total + capitulos_ponderados + p_artistica + p_intelectual
-    pac_value = (numerador / docentes_equivalentes) if docentes_equivalentes > 0 else None
+    ip_value = (numerador / docentes_equivalentes) if docentes_equivalentes > 0 else None
 
     summary = {
         "docentes_total": len(teacher_rows),
@@ -595,7 +613,8 @@ def _compute_pac_summary(
         "articulos_ponderados": round(articulos_ponderados, 4),
         "capitulos_ponderados": round(capitulos_ponderados, 4),
         "numerador": round(numerador, 4),
-        "pac": round(pac_value, 6) if pac_value is not None else None,
+        "ip": round(ip_value, 6) if ip_value is not None else None,
+        "pac": round(ip_value, 6) if ip_value is not None else None,
     }
 
     selected_period_label = "-"
@@ -612,9 +631,10 @@ def _compute_pac_summary(
     )
 
 
-@main_bp.route("/evaluacion/pac/pdf")
+@main_bp.route("/evaluacion/ip/pdf", endpoint="evaluacion_ip_pdf")
+@main_bp.route("/evaluacion/pac/pdf", endpoint="evaluacion_pac_pdf")
 @login_required
-def evaluacion_pac_pdf():
+def evaluacion_ip_pdf():
     evaluation_year = request.args.get("year", type=int)
     selected_faculty = request.args.get("faculty", type=str, default="ALL")
     selected_career = request.args.get("career", type=str, default="ALL")
@@ -634,29 +654,15 @@ def evaluacion_pac_pdf():
         evaluation_year = years[0] if years else None
 
     if evaluation_year is None:
-        flash("No hay años disponibles para generar el reporte PA.", "error")
-        return redirect(url_for("main.evaluacion_pac"))
+        flash("No hay años disponibles para generar el reporte iP.", "error")
+        return redirect(url_for("main.evaluacion_ip"))
 
-    artistic_setting = PacArtisticSetting.query.filter_by(
-        evaluation_year=evaluation_year,
-        faculty_scope=selected_faculty,
-        career_scope=selected_career,
-    ).first()
-    if artistic_setting:
-        p_artistica = round(float(artistic_setting.artistic_value), 4) if artistic_setting.artistic_value is not None else 10.0
-        p_intelectual = round(float(artistic_setting.intellectual_value), 4) if artistic_setting.intellectual_value is not None else 0.0
-    else:
-        p_artistica = 10.0
-        p_intelectual = 0.0
-
-    summary, source_years, normalized_pub_year_filter, denominator_components = _compute_pac_summary(
+    summary, source_years, normalized_pub_year_filter, denominator_components = _compute_ip_summary(
         evaluation_year=evaluation_year,
         selected_faculty=selected_faculty,
         selected_career=selected_career,
         publication_year_filter=publication_year_filter,
         exclude_devueltos=exclude_devueltos,
-        p_artistica=p_artistica,
-        p_intelectual=p_intelectual,
     )
 
     buffer = io.BytesIO()
@@ -674,7 +680,7 @@ def evaluacion_pac_pdf():
     period_label = ", ".join(str(year) for year in source_years) if source_years else "-"
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    story.append(Paragraph("Reporte PA (Producción Académica)", styles["Title"]))
+    story.append(Paragraph("Reporte iP (Índice de Producción Académica per cápita)", styles["Title"]))
     story.append(Spacer(1, 0.2 * cm))
     story.append(Paragraph(f"Año de evaluación: {evaluation_year}", styles["Normal"]))
     story.append(Paragraph(f"Facultad: {selected_faculty}", styles["Normal"]))
@@ -696,9 +702,9 @@ def evaluacion_pac_pdf():
         ["Artículos ponderados", str(summary["articulos_ponderados"])],
         ["Capítulos ponderados", str(summary["capitulos_ponderados"])],
         ["Producción artística", str(summary["artistica_total"])],
-        ["Producción intelectual", str(summary["intelectual_total"])],
-        ["Numerador PA", str(summary["numerador"])],
-        ["PA", str(summary["pac"]) if summary["pac"] is not None else "-"],
+        ["PIA (Producción intelectual aplicada)", str(summary["intelectual_total"])],
+        ["Numerador iP", str(summary["numerador"])],
+        ["iP", str(summary["pac"]) if summary["pac"] is not None else "-"],
     ]
     summary_table = Table(summary_table_data, colWidths=[10 * cm, 6 * cm])
     summary_table.setStyle(
@@ -751,20 +757,105 @@ def evaluacion_pac_pdf():
     doc.build(story)
     buffer.seek(0)
 
-    file_name = f"pa_{evaluation_year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    file_name = f"ip_{evaluation_year}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     return send_file(buffer, mimetype="application/pdf", as_attachment=True, download_name=file_name)
 
 
-@main_bp.route("/evaluacion/pac")
+@main_bp.route("/evaluacion/pa-pia", endpoint="evaluacion_pa_pia_mantenimiento")
 @login_required
-def evaluacion_pac():
-    artistica_raw = request.args.get("artistica", type=str)
-    intelectual_raw = request.args.get("intelectual", type=str)
-    persist_artistica = request.args.get("set_artistica", type=str, default="0") == "1"
-    persist_intelectual = request.args.get("set_intelectual", type=str, default="0") == "1"
-    parsed_artistica = _parse_non_negative_float((artistica_raw or "").strip())
-    parsed_intelectual = _parse_non_negative_float((intelectual_raw or "").strip())
-    p_artistica = 10.0
+def evaluacion_pa_pia_mantenimiento():
+    years_available = [
+        int(row[0])
+        for row in db.session.query(Publication.publication_year)
+        .filter(Publication.publication_year.isnot(None))
+        .distinct()
+        .order_by(Publication.publication_year.desc())
+        .all()
+        if row[0]
+    ]
+
+    selected_year = request.args.get("year", type=int)
+    if selected_year is None:
+        selected_year = years_available[0] if years_available else datetime.now().year
+
+    action = request.args.get("action", type=str, default="save").strip().lower()
+    year_value = request.args.get("set_year", type=int)
+    pa_raw = request.args.get("pa", type=str, default="")
+    pia_raw = request.args.get("pia", type=str, default="")
+
+    if year_value is not None and action in {"save", "delete"}:
+        setting = PacArtisticSetting.query.filter_by(
+            evaluation_year=year_value,
+            faculty_scope="ALL",
+            career_scope="ALL",
+        ).first()
+
+        if action == "delete":
+            if setting is not None:
+                db.session.delete(setting)
+                db.session.commit()
+                flash(f"Registro anual eliminado para {year_value}.", "success")
+            else:
+                flash(f"No existe registro anual para {year_value}.", "error")
+            return redirect(url_for("main.evaluacion_pa_pia_mantenimiento", year=selected_year))
+
+        pa_value = _parse_non_negative_float(pa_raw)
+        pia_value = _parse_non_negative_float(pia_raw)
+        if pa_value is None:
+            pa_value = 0.0
+        if pia_value is None:
+            pia_value = 0.0
+
+        if setting is None:
+            setting = PacArtisticSetting(
+                evaluation_year=year_value,
+                faculty_scope="ALL",
+                career_scope="ALL",
+                artistic_value=round(pa_value, 4),
+                intellectual_value=round(pia_value, 4),
+            )
+            db.session.add(setting)
+        else:
+            setting.artistic_value = round(pa_value, 4)
+            setting.intellectual_value = round(pia_value, 4)
+        db.session.commit()
+        flash(f"Valores anuales guardados para {year_value}.", "success")
+        return redirect(url_for("main.evaluacion_pa_pia_mantenimiento", year=year_value))
+
+    yearly_rows = (
+        PacArtisticSetting.query.filter_by(faculty_scope="ALL", career_scope="ALL")
+        .order_by(PacArtisticSetting.evaluation_year.desc())
+        .all()
+    )
+    yearly_data = [
+        {
+            "year": row.evaluation_year,
+            "pa": round(float(row.artistic_value or 0.0), 4),
+            "pia": round(float(row.intellectual_value or 0.0), 4),
+            "updated_at": row.updated_at,
+        }
+        for row in yearly_rows
+    ]
+
+    current_setting = next((row for row in yearly_data if row["year"] == selected_year), None)
+    selected_pa = current_setting["pa"] if current_setting else 0.0
+    selected_pia = current_setting["pia"] if current_setting else 0.0
+
+    return render_template(
+        "main/evaluacion_pa_pia_mantenimiento.html",
+        years_available=years_available,
+        selected_year=selected_year,
+        selected_pa=f"{selected_pa:g}",
+        selected_pia=f"{selected_pia:g}",
+        yearly_data=yearly_data,
+    )
+
+
+@main_bp.route("/evaluacion/ip", endpoint="evaluacion_ip")
+@main_bp.route("/evaluacion/pac", endpoint="evaluacion_pac")
+@login_required
+def evaluacion_ip():
+    p_artistica = 0.0
     p_intelectual = 0.0
     evaluation_year = request.args.get("year", type=int)
     selected_faculty = request.args.get("faculty", type=str, default="ALL")
@@ -879,56 +970,7 @@ def evaluacion_pac():
             if selected_career != "ALL" and selected_career not in career_options:
                 selected_career = "ALL"
 
-        artistic_setting = PacArtisticSetting.query.filter_by(
-            evaluation_year=evaluation_year,
-            faculty_scope=selected_faculty,
-            career_scope=selected_career,
-        ).first()
-
-        if persist_artistica and parsed_artistica is not None:
-            p_artistica = round(parsed_artistica, 4)
-            if artistic_setting is None:
-                artistic_setting = PacArtisticSetting(
-                    evaluation_year=evaluation_year,
-                    faculty_scope=selected_faculty,
-                    career_scope=selected_career,
-                    artistic_value=p_artistica,
-                    intellectual_value=round(parsed_intelectual, 4) if parsed_intelectual is not None else 0.0,
-                )
-                db.session.add(artistic_setting)
-            else:
-                artistic_setting.artistic_value = p_artistica
-
-        if persist_intelectual and parsed_intelectual is not None:
-            p_intelectual = round(parsed_intelectual, 4)
-            if artistic_setting is None:
-                artistic_setting = PacArtisticSetting(
-                    evaluation_year=evaluation_year,
-                    faculty_scope=selected_faculty,
-                    career_scope=selected_career,
-                    artistic_value=round(parsed_artistica, 4) if parsed_artistica is not None else 10.0,
-                    intellectual_value=p_intelectual,
-                )
-                db.session.add(artistic_setting)
-            else:
-                artistic_setting.intellectual_value = p_intelectual
-
-        if (persist_artistica and parsed_artistica is not None) or (persist_intelectual and parsed_intelectual is not None):
-            db.session.commit()
-
-        if artistic_setting is not None:
-            p_artistica = round(float(artistic_setting.artistic_value or 0.0), 4)
-            p_intelectual = round(float(artistic_setting.intellectual_value or 0.0), 4)
-        else:
-            if parsed_artistica is not None:
-                p_artistica = round(parsed_artistica, 4)
-            else:
-                p_artistica = 10.0
-
-            if parsed_intelectual is not None:
-                p_intelectual = round(parsed_intelectual, 4)
-            else:
-                p_intelectual = 0.0
+        p_artistica, p_intelectual = _annual_pa_pia_totals(source_years)
 
         teachers_query = Teacher.query.filter(Teacher.year == evaluation_year)
         if selected_faculty != "ALL":
@@ -1056,7 +1098,7 @@ def evaluacion_pac():
                 publication_type_stats["E"]["ponderado"] += 1.0
 
         numerador = articulos_ponderados + libros_total + capitulos_ponderados + p_artistica + p_intelectual
-        pac_value = (numerador / docentes_equivalentes) if docentes_equivalentes > 0 else None
+        ip_value = (numerador / docentes_equivalentes) if docentes_equivalentes > 0 else None
 
         summary = {
             "docentes_total": len(teacher_rows),
@@ -1070,7 +1112,8 @@ def evaluacion_pac():
             "articulos_ponderados": round(articulos_ponderados, 4),
             "capitulos_ponderados": round(capitulos_ponderados, 4),
             "numerador": round(numerador, 4),
-            "pac": round(pac_value, 6) if pac_value is not None else None,
+            "ip": round(ip_value, 6) if ip_value is not None else None,
+            "pac": round(ip_value, 6) if ip_value is not None else None,
         }
 
     dedication_stats = sorted(dedication_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -1085,11 +1128,9 @@ def evaluacion_pac():
     )
 
     return render_template(
-        "main/evaluacion_pac.html",
+        "main/evaluacion_ip.html",
         years=years,
         evaluation_year=evaluation_year,
-        artistica_input=f"{p_artistica:g}",
-        intelectual_input=f"{p_intelectual:g}",
         selected_faculty=selected_faculty,
         selected_career=selected_career,
         faculty_options=faculty_options,
@@ -1107,9 +1148,10 @@ def evaluacion_pac():
     )
 
 
-@main_bp.route("/evaluacion/pac/historico")
+@main_bp.route("/evaluacion/ip/historico", endpoint="evaluacion_ip_historico")
+@main_bp.route("/evaluacion/pac/historico", endpoint="evaluacion_pac_historico")
 @login_required
-def evaluacion_pac_historico():
+def evaluacion_ip_historico():
     years = [
         row[0]
         for row in db.session.query(Teacher.year)
@@ -1120,7 +1162,7 @@ def evaluacion_pac_historico():
 
     if not years:
         return render_template(
-            "main/evaluacion_pac_historico.html",
+            "main/evaluacion_ip_historico.html",
             years=[],
             selected_year_start=None,
             selected_year_end=None,
@@ -1192,26 +1234,12 @@ def evaluacion_pac_historico():
 
     history_rows = []
     for evaluation_year in target_years:
-        artistic_setting = PacArtisticSetting.query.filter_by(
-            evaluation_year=evaluation_year,
-            faculty_scope=selected_faculty,
-            career_scope=selected_career,
-        ).first()
-        if artistic_setting:
-            artistica_value = round(float(artistic_setting.artistic_value), 4) if artistic_setting.artistic_value is not None else 10.0
-            intelectual_value = round(float(artistic_setting.intellectual_value), 4) if artistic_setting.intellectual_value is not None else 0.0
-        else:
-            artistica_value = 10.0
-            intelectual_value = 0.0
-
-        summary, source_years, normalized_pub_year_filter, _ = _compute_pac_summary(
+        summary, source_years, normalized_pub_year_filter, _ = _compute_ip_summary(
             evaluation_year=evaluation_year,
             selected_faculty=selected_faculty,
             selected_career=selected_career,
             publication_year_filter=publication_year_filter,
             exclude_devueltos=exclude_devueltos,
-            p_artistica=artistica_value,
-            p_intelectual=intelectual_value,
         )
 
         history_rows.append(
@@ -1241,7 +1269,7 @@ def evaluacion_pac_historico():
     chart_values = [row["pac"] if row["pac"] is not None else 0 for row in history_rows]
 
     return render_template(
-        "main/evaluacion_pac_historico.html",
+        "main/evaluacion_ip_historico.html",
         years=years,
         selected_year_start=selected_year_start,
         selected_year_end=selected_year_end,

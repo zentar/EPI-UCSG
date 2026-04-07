@@ -11,3 +11,6 @@ __pycache__/
 
 # Salidas
 .DS_Store
+
+# Cargas operativas (no versionar)
+data/uploads/
